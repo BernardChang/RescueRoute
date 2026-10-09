@@ -40,8 +40,8 @@
     clearErrors();
   }
   function navigate(nextMode) {
-    if (location.hash === '#' + nextMode) setMode(nextMode);
-    else location.hash = nextMode;
+    setMode(nextMode);
+    if (location.hash !== '#' + mode) history.pushState(null, '', '#' + mode);
   }
   tabs.forEach((tab, index) => {
     tab.addEventListener('click', () => navigate(index ? 'signup' : 'login'));
@@ -53,10 +53,15 @@
       tabs[next].focus();
     });
   });
-  window.addEventListener('hashchange', () => setMode(location.hash.slice(1)));
+  const syncLocation = () => {
+    const nextMode = location.hash === '#signup' ? 'signup' : 'login';
+    if (nextMode !== mode) setMode(nextMode);
+  };
+  window.addEventListener('hashchange', syncLocation);
+  window.addEventListener('popstate', syncLocation);
   $('alternate-mode').addEventListener('click', () => {
     navigate(mode === 'login' ? 'signup' : 'login');
-    tabs[mode === 'login' ? 1 : 0].focus();
+    tabs[mode === 'signup' ? 1 : 0].focus();
   });
   toggle.addEventListener('click', () => {
     const visible = password.type === 'password';

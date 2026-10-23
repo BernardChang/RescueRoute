@@ -29,7 +29,7 @@ if (form) {
     locked.hidden = admin && photoStorageReady;
     input.disabled = !user || !adminEmail || !photoStorageReady || busy;
     authNote.textContent = !photoStorageReady
-      ? 'Photo storage is waiting for Firebase rule permissions. No files will be accepted until setup is complete.'
+      ? 'Secure photo storage is being configured. You can upload once setup is complete.'
       : !adminEmail
       ? 'Photo uploads are being configured. Check back soon.'
       : user
@@ -39,7 +39,7 @@ if (form) {
     submit.innerHTML = busy ? 'Uploading…' : 'Upload photos <span>↗</span>';
     if (!photoStorageReady) {
       locked.querySelector('strong').textContent = 'Storage setup is pending';
-      locked.querySelector('p').textContent = 'Firebase denied the current service account permission to publish Storage rules. The admin archive will open once that permission is granted.';
+      locked.querySelector('p').textContent = 'The secure photo archive will open here once setup is complete.';
     } else {
       locked.querySelector('strong').textContent = 'Admin access only';
       locked.querySelector('p').textContent = 'Sign in with an authorized admin account to view the photo archive.';

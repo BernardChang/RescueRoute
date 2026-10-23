@@ -1,4 +1,4 @@
-import { photoAdminEmail } from './photo-config.js';
+import { photoAdminEmail, photoStorageReady } from './photo-config.js';
 
 const $ = (id) => document.getElementById(id);
 const form = $('photo-upload-form');
@@ -25,17 +25,26 @@ if (form) {
   function isAdmin() { return !!user?.email && !!adminEmail && user.email.toLowerCase() === adminEmail; }
   function updateAccess() {
     const admin = isAdmin();
-    adminGallery.hidden = !admin;
-    locked.hidden = admin;
-    input.disabled = !user || !adminEmail || busy;
-    authNote.textContent = !adminEmail
+    adminGallery.hidden = !admin || !photoStorageReady;
+    locked.hidden = admin && photoStorageReady;
+    input.disabled = !user || !adminEmail || !photoStorageReady || busy;
+    authNote.textContent = !photoStorageReady
+      ? 'Photo storage is waiting for Firebase rule permissions. No files will be accepted until setup is complete.'
+      : !adminEmail
       ? 'Photo uploads are being configured. Check back soon.'
       : user
       ? (admin ? `Signed in as ${user.email}. You can upload and manage the admin archive.` : `Signed in as ${user.email}. Your upload will be stored for the RescueRoute admin team.`)
       : 'Sign in to submit a photo. Uploaded images are available to the admin team.';
-    submit.disabled = busy || !user || !adminEmail || selected.length === 0;
+    submit.disabled = busy || !user || !adminEmail || !photoStorageReady || selected.length === 0;
     submit.innerHTML = busy ? 'Uploading…' : 'Upload photos <span>↗</span>';
-    if (admin && user) loadGallery();
+    if (!photoStorageReady) {
+      locked.querySelector('strong').textContent = 'Storage setup is pending';
+      locked.querySelector('p').textContent = 'Firebase denied the current service account permission to publish Storage rules. The admin archive will open once that permission is granted.';
+    } else {
+      locked.querySelector('strong').textContent = 'Admin access only';
+      locked.querySelector('p').textContent = 'Sign in with an authorized admin account to view the photo archive.';
+    }
+    if (admin && user && photoStorageReady) loadGallery();
   }
   function clearPreviews() {
     previews.querySelectorAll('img[data-preview-url]').forEach((image) => URL.revokeObjectURL(image.dataset.previewUrl));
@@ -54,10 +63,10 @@ if (form) {
       remove.addEventListener('click', () => { selected.splice(index, 1); renderPreviews(); status($('upload-status'), ''); submit.disabled = !user || selected.length === 0 || busy; });
       row.append(image, info, remove); previews.append(row);
     });
-    submit.disabled = !user || selected.length === 0 || busy;
+    submit.disabled = !user || !photoStorageReady || selected.length === 0 || busy;
   }
   function addFiles(files) {
-    if (!adminEmail) { status($('upload-status'), 'Photo uploads are being configured. Please check back soon.', true); return; }
+    if (!adminEmail || !photoStorageReady) { status($('upload-status'), 'Photo storage is not ready yet. Please check back soon.', true); return; }
     const accepted = [];
     for (const file of files) {
       if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) { status($('upload-status'), `${file.name} isn’t a supported image. Choose a JPEG, PNG, or WebP.`, true); continue; }
@@ -75,7 +84,7 @@ if (form) {
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
     if (!user || !selected.length || busy || !client) return;
-    if (!adminEmail) { status($('upload-status'), 'Photo storage is being configured. Please try again later.', true); return; }
+    if (!adminEmail || !photoStorageReady) { status($('upload-status'), 'Photo storage is not ready yet. Please try again later.', true); return; }
     busy = true; submit.disabled = true; submit.textContent = 'Uploading…'; status($('upload-status'), 'Preparing secure upload…');
     const files = [...selected];
     const caption = $('photo-caption').value.trim().slice(0, 300);
@@ -106,7 +115,7 @@ if (form) {
   });
 
   async function loadGallery() {
-    if (!isAdmin() || !client) return;
+    if (!isAdmin() || !client || !photoStorageReady) return;
     const refresh = $('gallery-refresh'); refresh.disabled = true; gallery.replaceChildren();
     status($('gallery-status'), 'Loading the secure photo archive…');
     try {

@@ -1,7 +1,58 @@
-import { photoAdminEmail, photoStorageReady } from './photo-config.js';
+import { photoAdminEmail } from './photo-config.js';
 
 const $ = (id) => document.getElementById(id);
 const form = $('photo-upload-form');
+const DATABASE_NAME = 'rescueroute-local-photos';
+const STORE_NAME = 'photos';
+
+function openPhotoDatabase() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DATABASE_NAME, 1);
+    request.onupgradeneeded = () => {
+      const database = request.result;
+      if (!database.objectStoreNames.contains(STORE_NAME)) {
+        const store = database.createObjectStore(STORE_NAME, { keyPath: 'id' });
+        store.createIndex('uploadedAt', 'uploadedAt');
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+    request.onblocked = () => reject(new Error('Photo storage is busy in another tab.'));
+  });
+}
+
+async function withPhotoStore(mode, operation) {
+  const database = await openPhotoDatabase();
+  return new Promise((resolve, reject) => {
+    const transaction = database.transaction(STORE_NAME, mode);
+    const store = transaction.objectStore(STORE_NAME);
+    let result;
+    try { result = operation(store); }
+    catch (error) { database.close(); reject(error); return; }
+    transaction.oncomplete = () => { database.close(); resolve(result); };
+    transaction.onerror = () => { database.close(); reject(transaction.error || new Error('Local photo storage failed.')); };
+    transaction.onabort = () => { database.close(); reject(transaction.error || new Error('Local photo storage was interrupted.')); };
+  });
+}
+
+function savePhoto(photo) {
+  return withPhotoStore('readwrite', (store) => store.put(photo));
+}
+function deletePhoto(id) {
+  return withPhotoStore('readwrite', (store) => store.delete(id));
+}
+async function getPhotos() {
+  const database = await openPhotoDatabase();
+  return new Promise((resolve, reject) => {
+    const transaction = database.transaction(STORE_NAME, 'readonly');
+    const request = transaction.objectStore(STORE_NAME).getAll();
+    request.onsuccess = () => resolve(request.result.sort((a, b) => b.uploadedAt.localeCompare(a.uploadedAt)));
+    request.onerror = () => reject(request.error || new Error('Could not read local photos.'));
+    transaction.oncomplete = () => database.close();
+    transaction.onerror = () => { database.close(); reject(transaction.error); };
+  });
+}
+
 if (form) {
   const input = $('photo-files');
   const zone = $('drop-zone');
@@ -12,10 +63,10 @@ if (form) {
   const locked = $('gallery-locked');
   const gallery = $('photo-gallery');
   const adminEmail = photoAdminEmail.trim().toLowerCase();
-  let client;
   let user = null;
   let selected = [];
   let busy = false;
+  let galleryUrls = [];
 
   function status(element, text, error = false) {
     element.textContent = text;
@@ -25,26 +76,17 @@ if (form) {
   function isAdmin() { return !!user?.email && !!adminEmail && user.email.toLowerCase() === adminEmail; }
   function updateAccess() {
     const admin = isAdmin();
-    adminGallery.hidden = !admin || !photoStorageReady;
-    locked.hidden = admin && photoStorageReady;
-    input.disabled = !user || !adminEmail || !photoStorageReady || busy;
-    authNote.textContent = !photoStorageReady
-      ? 'Secure photo storage is being configured. You can upload once setup is complete.'
-      : !adminEmail
-      ? 'Photo uploads are being configured. Check back soon.'
-      : user
-      ? (admin ? `Signed in as ${user.email}. You can upload and manage the admin archive.` : `Signed in as ${user.email}. Your upload will be stored for the RescueRoute admin team.`)
-      : 'Sign in to submit a photo. Uploaded images are available to the admin team.';
-    submit.disabled = busy || !user || !adminEmail || !photoStorageReady || selected.length === 0;
-    submit.innerHTML = busy ? 'Uploading…' : 'Upload photos <span>↗</span>';
-    if (!photoStorageReady) {
-      locked.querySelector('strong').textContent = 'Storage setup is pending';
-      locked.querySelector('p').textContent = 'The secure photo archive will open here once setup is complete.';
-    } else {
-      locked.querySelector('strong').textContent = 'Admin access only';
-      locked.querySelector('p').textContent = 'Sign in with an authorized admin account to view the photo archive.';
-    }
-    if (admin && user && photoStorageReady) loadGallery();
+    adminGallery.hidden = !admin;
+    locked.hidden = admin;
+    input.disabled = !user || busy;
+    authNote.textContent = user
+      ? `Signed in as ${user.email}. Photos are saved in this browser for the RescueRoute admin team.`
+      : 'Sign in to submit a photo. Photos are saved on this device for the RescueRoute admin team.';
+    submit.disabled = busy || !user || selected.length === 0;
+    submit.innerHTML = busy ? 'Saving…' : 'Save photos <span>↗</span>';
+    locked.querySelector('strong').textContent = 'Admin access only';
+    locked.querySelector('p').textContent = 'Sign in with the authorized admin account on this device to view the local photo archive.';
+    if (admin && user) loadGallery();
   }
   function clearPreviews() {
     previews.querySelectorAll('img[data-preview-url]').forEach((image) => URL.revokeObjectURL(image.dataset.previewUrl));
@@ -63,15 +105,14 @@ if (form) {
       remove.addEventListener('click', () => { selected.splice(index, 1); renderPreviews(); status($('upload-status'), ''); submit.disabled = !user || selected.length === 0 || busy; });
       row.append(image, info, remove); previews.append(row);
     });
-    submit.disabled = !user || !photoStorageReady || selected.length === 0 || busy;
+    submit.disabled = !user || selected.length === 0 || busy;
   }
   function addFiles(files) {
-    if (!adminEmail || !photoStorageReady) { status($('upload-status'), 'Photo storage is not ready yet. Please check back soon.', true); return; }
     const accepted = [];
     for (const file of files) {
       if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) { status($('upload-status'), `${file.name} isn’t a supported image. Choose a JPEG, PNG, or WebP.`, true); continue; }
       if (file.size > 10 * 1024 * 1024) { status($('upload-status'), `${file.name} is larger than 10 MB.`, true); continue; }
-      if (selected.length + accepted.length >= 8) { status($('upload-status'), 'You can upload up to 8 photos at a time.', true); break; }
+      if (selected.length + accepted.length >= 8) { status($('upload-status'), 'You can save up to 8 photos at a time.', true); break; }
       if (!selected.some((existing) => existing.name === file.name && existing.size === file.size)) accepted.push(file);
     }
     selected = [...selected, ...accepted]; renderPreviews();
@@ -83,78 +124,65 @@ if (form) {
 
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
-    if (!user || !selected.length || busy || !client) return;
-    if (!adminEmail || !photoStorageReady) { status($('upload-status'), 'Photo storage is not ready yet. Please try again later.', true); return; }
-    busy = true; submit.disabled = true; submit.textContent = 'Uploading…'; status($('upload-status'), 'Preparing secure upload…');
+    if (!user || !selected.length || busy) return;
+    busy = true; submit.disabled = true; submit.textContent = 'Saving…'; status($('upload-status'), 'Saving photos in this browser…');
     const files = [...selected];
     const caption = $('photo-caption').value.trim().slice(0, 300);
     let completed = 0;
     try {
       for (const file of files) {
-        const safeExtension = file.type === 'image/jpeg' ? 'jpg' : file.type === 'image/png' ? 'png' : 'webp';
-        const key = `${user.uid}_${crypto.randomUUID()}.${safeExtension}`;
-        const photoRef = client.ref(client.storage, `rescue-uploads/${key}`);
-        await client.uploadBytes(photoRef, file, {
-          contentType: file.type,
-          customMetadata: { caption, uploaderEmail: user.email || '', uploaderName: user.displayName || '', originalName: file.name, uploadedAt: new Date().toISOString() },
+        await savePhoto({
+          id: crypto.randomUUID(), blob: file, name: file.name, type: file.type, size: file.size,
+          caption, uploaderEmail: user.email || '', uploaderName: user.displayName || '',
+          uploadedAt: new Date().toISOString(),
         });
         completed += 1;
-        status($('upload-status'), `Uploaded ${completed} of ${files.length} ${files.length === 1 ? 'photo' : 'photos'}…`);
+        status($('upload-status'), `Saved ${completed} of ${files.length} ${files.length === 1 ? 'photo' : 'photos'} locally…`);
       }
       selected = []; renderPreviews(); form.reset();
-      status($('upload-status'), `${completed} ${completed === 1 ? 'photo was' : 'photos were'} uploaded securely for the RescueRoute admin team.`);
+      status($('upload-status'), `${completed} ${completed === 1 ? 'photo was' : 'photos were'} saved in this browser for the RescueRoute admin team.`);
       if (isAdmin()) await loadGallery();
     } catch (error) {
-      const detail = error?.code === 'storage/unauthorized'
-        ? 'Photo storage permissions are not ready. Contact the site administrator.'
-        : error?.code === 'storage/retry-limit-exceeded' || error?.code === 'storage/canceled'
-          ? 'The upload was interrupted. Check your connection and try again.'
-          : 'The photos could not be uploaded. Check your connection and try again.';
-      status($('upload-status'), completed ? `${completed} photo(s) uploaded. ${detail}` : detail, true);
+      const message = error?.name === 'QuotaExceededError'
+        ? 'This device is out of browser storage space. Remove some photos and try again.'
+        : 'The photos could not be saved in this browser. Check available storage and try again.';
+      status($('upload-status'), completed ? `${completed} photo(s) saved. ${message}` : message, true);
     } finally { busy = false; updateAccess(); }
   });
 
   async function loadGallery() {
-    if (!isAdmin() || !client || !photoStorageReady) return;
+    if (!isAdmin()) return;
     const refresh = $('gallery-refresh'); refresh.disabled = true; gallery.replaceChildren();
-    status($('gallery-status'), 'Loading the secure photo archive…');
+    galleryUrls.forEach((url) => URL.revokeObjectURL(url)); galleryUrls = [];
+    status($('gallery-status'), 'Loading photos from this browser…');
     try {
-      const root = client.ref(client.storage, 'rescue-uploads');
-      const result = await client.listAll(root);
-      const photos = await Promise.all(result.items.map(async (item) => {
-        const [url, metadata] = await Promise.all([client.getDownloadURL(item), client.getMetadata(item)]);
-        return { item, url, metadata };
-      }));
-      photos.sort((a, b) => (b.metadata.customMetadata?.uploadedAt || b.metadata.timeCreated).localeCompare(a.metadata.customMetadata?.uploadedAt || a.metadata.timeCreated));
-      if (!photos.length) status($('gallery-status'), 'No photos have been uploaded yet.'); else status($('gallery-status'), `${photos.length} ${photos.length === 1 ? 'photo' : 'photos'} in the admin archive.`);
+      const photos = await getPhotos();
+      if (!photos.length) status($('gallery-status'), 'No photos have been saved on this device yet.'); else status($('gallery-status'), `${photos.length} ${photos.length === 1 ? 'photo' : 'photos'} in this browser’s admin archive.`);
       for (const photo of photos) {
         const card = document.createElement('article'); card.className = 'photo-card';
-        const image = document.createElement('img'); image.src = photo.url; image.alt = photo.metadata.customMetadata?.caption || photo.metadata.customMetadata?.originalName || 'Community field report'; image.loading = 'lazy';
+        const image = document.createElement('img');
+        const url = URL.createObjectURL(photo.blob); galleryUrls.push(url);
+        image.src = url; image.alt = photo.caption || photo.name || 'Community field report'; image.loading = 'lazy';
         const body = document.createElement('div'); body.className = 'photo-card-body';
-        const title = document.createElement('strong'); title.textContent = photo.metadata.customMetadata?.originalName || photo.item.name;
-        body.append(title);
-        const caption = photo.metadata.customMetadata?.caption;
-        if (caption) { const copy = document.createElement('p'); copy.textContent = caption; body.append(copy); }
-        const uploader = photo.metadata.customMetadata?.uploaderEmail || 'RescueRoute user';
-        const date = new Date(photo.metadata.customMetadata?.uploadedAt || photo.metadata.timeCreated);
-        const dateLine = document.createElement('small'); dateLine.textContent = `${uploader} · ${date.toLocaleString()}`; body.append(dateLine);
+        const title = document.createElement('strong'); title.textContent = photo.name || 'Photo'; body.append(title);
+        if (photo.caption) { const copy = document.createElement('p'); copy.textContent = photo.caption; body.append(copy); }
+        const dateLine = document.createElement('small'); dateLine.textContent = `${photo.uploaderEmail || 'RescueRoute user'} · ${new Date(photo.uploadedAt).toLocaleString()}`; body.append(dateLine);
         const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'text-button'; remove.textContent = 'Delete photo'; remove.addEventListener('click', async () => {
           if (!isAdmin()) return;
           remove.disabled = true;
-          try { await client.deleteObject(photo.item); await loadGallery(); }
-          catch { status($('gallery-status'), 'The photo could not be deleted. Try again.', true); remove.disabled = false; }
+          try { await deletePhoto(photo.id); await loadGallery(); }
+          catch { status($('gallery-status'), 'The photo could not be deleted from this browser. Try again.', true); remove.disabled = false; }
         }); body.append(remove);
         card.append(image, body); gallery.append(card);
       }
-    } catch (error) {
-      status($('gallery-status'), error?.code === 'storage/unauthorized' ? 'This account is not authorized to access the archive.' : 'The archive could not be loaded. Refresh to try again.', true);
+    } catch {
+      status($('gallery-status'), 'Local photo storage could not be opened. Check browser storage settings and refresh.', true);
     } finally { refresh.disabled = false; }
   }
   $('gallery-refresh').addEventListener('click', loadGallery);
-  window.addEventListener('rescue:uploads', () => updateAccess());
+  window.addEventListener('rescue:uploads', updateAccess);
   import('./firebase-client.js').then(async (module) => {
-    client = module;
-    await client.auth.authStateReady();
-    client.onAuthStateChanged(client.auth, (nextUser) => { user = nextUser; updateAccess(); });
+    await module.auth.authStateReady();
+    module.onAuthStateChanged(module.auth, (nextUser) => { user = nextUser; updateAccess(); });
   }).catch(() => { status($('upload-status'), 'Sign-in is unavailable right now. Reload and try again.', true); });
 }

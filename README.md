@@ -1,32 +1,27 @@
 # RescueRoute — city access and field photos
 
-A responsive RescueRoute city access map with Firebase Authentication and a secure field photo upload page in project `waicy-9666a`.
+A responsive RescueRoute city map with road-access overlays, Firebase Authentication, and a photo upload page.
 
 ## Features
 
-- Seoul city map with separate main road, motorcycle road, and footpath overlays.
-- Vehicle mode filters, city search, map controls, and a user-initiated current-location option.
-- Email/password registration, login, password reset, and a signed-in account view.
-- Photo uploads with captions, previews, size/type validation, and a private admin gallery.
-- Firebase Storage holds uploaded photos across devices and sessions. Storage rules allow signed-in users to add images, while only the verified admin email can read or delete them.
+- Seoul city map with main road, motorcycle road, and footpath overlays, travel-mode filters, place search, and current location.
+- Email/password registration, login, password reset, and signed-in account view through Firebase Authentication.
+- Photo submission with captions, previews, file validation, and an admin gallery.
+- Photos are stored in IndexedDB in the current browser, so they remain available after reloads on this device. They do not sync to other devices and can be cleared if browser site data is removed.
 
 ## Run locally
 
 Run `python3 -m http.server 4173 --directory dist` from this folder, then visit `http://localhost:4173`. Serve over HTTP locally or HTTPS in production; do not open the HTML as a `file://` URL.
 
-There is no build step. `dist/firebase-client.js` imports Firebase's modular Web SDK v12.19.0 from the official CDN. `dist/firebase-config.js` contains the public configuration retrieved from the existing Firebase Web App.
+There is no build step. The app's HTML, CSS, and JavaScript files are served from `dist/`. Firebase's modular Web SDK and map tiles are loaded from their online providers. `dist/firebase-config.js` contains the public configuration for the existing Firebase Web App.
 
 ## Authentication, photos, and credentials
 
-Firebase Authentication manages accounts and sessions. Passwords are sent directly to Firebase over HTTPS; this site never saves or logs them. Session tokens are managed by the Firebase SDK according to the user's persistence choice. Firebase Storage stores uploaded photo files and their caption/uploader metadata.
+Firebase Authentication manages accounts and sessions. Passwords are sent directly to Firebase over HTTPS; this site never saves or logs them. Photo files and their captions/uploader metadata are stored locally in browser IndexedDB. The gallery UI is limited to `bychang408@gmail.com`, but this local-only arrangement is not a secure shared archive: browser data is tied to the device and website origin, and anyone with access to that browser profile can inspect its local data.
 
-`storage.rules` is the server-side access boundary. Replace `ADMIN_EMAIL_PLACEHOLDER` with the designated Firebase account email before deployment and deploy the rules to project `waicy-9666a`. The browser-side `dist/photo-config.js` must use the same email for the admin interface; it only controls the display, while Firebase Storage rules enforce access. Uploads remain paused until both are configured.
+The Firebase Admin SDK service-account file is not needed at runtime and must never be put in `dist`, committed, or sent to visitors. `.gitignore` excludes common service-account filenames. The public Firebase web configuration/API key identifies the project; it is not the Admin SDK credential.
 
-The supplied Admin SDK service-account file remains outside this repository and the deployed static assets. It was used locally to inspect/configure the project. It is not required at runtime and must never be put in `dist`, committed, or sent to visitors. `.gitignore` excludes common service-account filenames.
-
-The public Firebase web configuration/API key identifies the project; it is not the Admin SDK credential. Future application data/API endpoints must independently verify Firebase ID tokens or enforce Firebase Security Rules. Hiding the login UI is not an authorization boundary.
-
-The public Site allows anyone with its link to create an account or sign in. Photo archive access remains restricted by Firebase Storage rules.
+The public site allows anyone with its link to create an account or sign in. The map uses illustrative road overlays; confirm local road access before travel.
 
 ## Documentation
 

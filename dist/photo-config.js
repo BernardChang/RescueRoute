@@ -1,4 +1,2 @@
-// This address controls the photo archive UI only. Firebase Storage rules must
-// enforce the same admin address on the server before uploaded images are exposed.
+// This address controls which signed-in account can view and manage this browser's local photo archive.
 export const photoAdminEmail = 'bychang408@gmail.com';
-export const photoStorageReady = false;

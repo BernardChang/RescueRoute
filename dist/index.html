@@ -27,16 +27,16 @@
     <div class="uploads-heading"><span class="rescue-kicker"><i></i> COMMUNITY FIELD REPORTS</span><h1>Share what you see.</h1><p>Upload a photo of a blocked road, damaged route, or access point to help the team understand conditions on the ground.</p></div>
     <section class="uploads-card" aria-labelledby="upload-title">
       <div class="upload-card-heading"><div><span class="panel-eyebrow">FIELD PHOTO</span><h2 id="upload-title">Add a photo</h2></div><span class="upload-lock" aria-label="Uploads are private to the admin team">⌑ ADMIN ARCHIVE</span></div>
-      <p class="upload-signin-note" id="upload-auth-note">Sign in to submit a photo. Uploaded images are available to the admin team.</p>
+      <p class="upload-signin-note" id="upload-auth-note">Sign in to submit a photo. Photos are saved on this device for the admin team.</p>
       <form id="photo-upload-form">
-        <label class="drop-zone" for="photo-files" id="drop-zone"><span class="upload-icon" aria-hidden="true">↑</span><strong>Choose photos to upload</strong><span>JPEG, PNG or WebP · up to 10 MB each</span><input id="photo-files" type="file" accept="image/jpeg,image/png,image/webp" multiple hidden></label>
+        <label class="drop-zone" for="photo-files" id="drop-zone"><span class="upload-icon" aria-hidden="true">↑</span><strong>Choose photos to save</strong><span>JPEG, PNG or WebP · up to 10 MB each · saved in this browser</span><input id="photo-files" type="file" accept="image/jpeg,image/png,image/webp" multiple hidden></label>
         <div class="upload-preview-list" id="upload-preview-list" aria-live="polite"></div>
         <label class="upload-caption-label" for="photo-caption">What should the team know? <span>Optional</span></label><textarea id="photo-caption" maxlength="300" rows="3" placeholder="Describe the location or road condition…"></textarea>
-        <button class="route-button upload-submit" id="upload-submit" type="submit" disabled>Upload photos <span>↗</span></button>
+        <button class="route-button upload-submit" id="upload-submit" type="submit" disabled>Save photos <span>↗</span></button>
         <p id="upload-status" class="upload-status" role="status" aria-live="polite" hidden></p>
       </form>
     </section>
-    <section class="admin-gallery" id="admin-gallery" aria-labelledby="gallery-title" hidden><div class="gallery-heading"><div><span class="panel-eyebrow">RESTRICTED ACCESS</span><h2 id="gallery-title">Admin photo archive</h2><p>Photos are stored in Firebase Storage and only visible to the designated admin account.</p></div><button class="gallery-refresh" id="gallery-refresh" type="button">↻ Refresh</button></div><div id="gallery-status" class="gallery-status" role="status" aria-live="polite"></div><div class="photo-gallery" id="photo-gallery"></div></section>
+    <section class="admin-gallery" id="admin-gallery" aria-labelledby="gallery-title" hidden><div class="gallery-heading"><div><span class="panel-eyebrow">RESTRICTED ACCESS</span><h2 id="gallery-title">Admin photo archive</h2><p>Photos are saved in this browser’s local storage and shown to the designated admin account on this device.</p></div><button class="gallery-refresh" id="gallery-refresh" type="button">↻ Refresh</button></div><div id="gallery-status" class="gallery-status" role="status" aria-live="polite"></div><div class="photo-gallery" id="photo-gallery"></div></section>
     <section class="gallery-locked" id="gallery-locked" hidden><span aria-hidden="true">⌑</span><div><strong>Admin access only</strong><p>Sign in with an authorized admin account to view the photo archive.</p></div></section>
     <footer class="rescue-footer"><span>RescueRoute <span>·</span> Community reports, handled with care.</span><span>Photo access is restricted to the project admin.</span></footer>
   </main>

@@ -6,8 +6,17 @@
     return;
   }
   const map = L.map('city-map', { zoomControl: false, scrollWheelZoom: true }).setView([37.5665, 126.9780], 14);
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>', crossOrigin: true
+  const tileUrl = document.querySelector('meta[name="rescue-map-tile-url"]')?.content;
+  if (!tileUrl) {
+    document.getElementById('city-map').innerHTML = '<div class="map-offline">The map tile source is not configured. Check the site setup and refresh.</div>';
+    return;
+  }
+  L.tileLayer(tileUrl, {
+    maxZoom: 19,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+    referrerPolicy: 'strict-origin-when-cross-origin',
+    updateWhenIdle: true,
+    keepBuffer: 1
   }).addTo(map);
   L.control.zoom({ position: 'bottomright' }).addTo(map);
   L.control.scale({ imperial: false, position: 'bottomleft' }).addTo(map);

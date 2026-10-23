@@ -15,6 +15,8 @@ Run `python3 -m http.server 4173 --directory dist` from this folder, then visit 
 
 There is no build step. The app's HTML, CSS, and JavaScript files are served from `dist/`. Firebase's modular Web SDK and map tiles are loaded from their online providers. `dist/firebase-config.js` contains the public configuration for the existing Firebase Web App.
 
+The map uses the standard `https://tile.openstreetmap.org/{z}/{x}/{y}.png` endpoint. It shows visible OpenStreetMap contributor attribution and sends a valid origin referrer. Leaflet requests tiles for the visible map area and the browser handles caching according to the tile server's response headers. The app does not prefetch or save tiles for offline use. Serve the site over HTTP or HTTPS; opening the HTML as a `file://` URL does not provide a usable web referrer.
+
 ## Authentication, photos, and credentials
 
 Firebase Authentication manages accounts and sessions. Passwords are sent directly to Firebase over HTTPS; this site never saves or logs them. Photo files and their captions/uploader metadata are stored locally in browser IndexedDB. The gallery UI is limited to `bychang408@gmail.com`, but this local-only arrangement is not a secure shared archive: browser data is tied to the device and website origin, and anyone with access to that browser profile can inspect its local data.

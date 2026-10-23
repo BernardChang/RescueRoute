@@ -4,13 +4,42 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#111c27">
-  <meta name="description" content="Create your Vertex account or securely sign in with email and password.">
-  <title>Welcome back · Vertex</title>
+  <meta name="description" content="RescueRoute helps people understand city road access and share field photos with the response team.">
+  <title>RescueRoute · City access map</title>
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%23111c27'/%3E%3Cpath d='M8 9l8 15L24 9h-6l-2 5-2-5z' fill='%23d4f87a'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
+  <link rel="stylesheet" href="rescue.css">
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
   <script src="app.js" defer></script>
+  <script src="rescue.js" defer></script>
+  <script type="module" src="uploads.js"></script>
 </head>
 <body>
+  <header class="rescue-nav"><a class="rescue-brand" href="#map"><span class="rescue-mark">R</span>Rescue<span>Route</span></a><nav aria-label="Main navigation"><a class="nav-active" href="#map" data-page-link="map">Map</a><a href="#road-guide" data-page-link="map">Road guide</a><a href="#uploads" data-page-link="uploads">Photo uploads</a><button class="nav-account" type="button" data-account-link>Sign in</button></nav></header>
+  <section class="rescue-home" id="rescue-home" aria-label="RescueRoute city map">
+    <div class="rescue-heading"><div><span class="rescue-kicker"><i></i> CITY ACCESS MAP</span><h1>Every route. <span>Clear ahead.</span></h1><p>Know which roads your vehicle can take before you set out.</p></div><button class="city-chip" type="button" id="city-location"><span aria-hidden="true">⌖</span> Seoul, South Korea <span>⌄</span></button></div>
+    <div class="map-layout"><section class="map-frame" aria-label="Interactive city road access map"><div class="map-top"><div><span class="live-indicator"></span><span id="map-location-label">SEOUL · CITY CENTRE</span></div><button id="locate-me" class="map-control" type="button" title="Use your current location">◎ <span>Locate me</span></button></div><div id="city-map" role="application" aria-label="OpenStreetMap map of Seoul with color-coded sample road access types"></div><p class="map-note"><span>ⓘ</span> Sample access overlays for demonstration. Confirm road access locally before travel.</p></section>
+    <aside class="route-panel"><div class="panel-eyebrow">PLAN YOUR ROUTE</div><h2>How are you travelling?</h2><div class="travel-modes" role="group" aria-label="Choose travel mode"><button class="mode-card selected" data-mode="car" type="button" aria-pressed="true"><span class="mode-icon">↗</span><strong>Car</strong><small>Main roads</small></button><button class="mode-card" data-mode="motorcycle" type="button" aria-pressed="false"><span class="mode-icon">◉</span><strong>Motorcycle</strong><small>Roads + paths</small></button><button class="mode-card" data-mode="foot" type="button" aria-pressed="false"><span class="mode-icon">⌁</span><strong>On foot</strong><small>Every path</small></button></div><label class="search-label" for="city-search">Explore a city</label><div class="city-search"><span aria-hidden="true">⌕</span><input id="city-search" type="search" placeholder="Search a city or place" autocomplete="off"><button id="search-city" type="button" aria-label="Search map">⌕</button></div><p class="search-hint" id="search-status" aria-live="polite">The map starts in central Seoul.</p><button id="show-route" class="route-button" type="button">Explore accessible roads <span>↗</span></button><div class="route-result" id="route-result" aria-live="polite" hidden></div><div class="map-legend" id="road-guide"><div class="legend-heading"><div><span class="panel-eyebrow">MAP LEGEND</span><h3>Three kinds of road.</h3></div><button id="toggle-all" class="legend-toggle" type="button">Hide all</button></div><label class="legend-row"><input type="checkbox" data-layer="main" checked><span class="legend-line main-line"></span><span class="legend-copy"><strong>Main road</strong><small>Accessible to all vehicles</small></span><span class="legend-count">A</span></label><label class="legend-row"><input type="checkbox" data-layer="moto" checked><span class="legend-line moto-line"></span><span class="legend-copy"><strong>Motorcycle road</strong><small>Motorcycles and walking</small></span><span class="legend-count">M</span></label><label class="legend-row"><input type="checkbox" data-layer="foot" checked><span class="legend-line foot-line"></span><span class="legend-copy"><strong>Footpath</strong><small>Pedestrian access only</small></span><span class="legend-count">P</span></label></div><div class="panel-foot"><span class="foot-shield">✓</span><span>Plan informed.<br><strong>Travel prepared.</strong></span><span class="foot-stamp">RR / 01</span></div></aside></div>
+    <footer class="rescue-footer"><span>RescueRoute <span>·</span> City access, made clearer.</span><span>Map data © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap contributors</a></span></footer>
+  </section>
+  <main class="uploads-page" id="uploads-page" hidden>
+    <div class="uploads-heading"><span class="rescue-kicker"><i></i> COMMUNITY FIELD REPORTS</span><h1>Share what you see.</h1><p>Upload a photo of a blocked road, damaged route, or access point to help the team understand conditions on the ground.</p></div>
+    <section class="uploads-card" aria-labelledby="upload-title">
+      <div class="upload-card-heading"><div><span class="panel-eyebrow">FIELD PHOTO</span><h2 id="upload-title">Add a photo</h2></div><span class="upload-lock" aria-label="Uploads are private to the admin team">⌑ ADMIN ARCHIVE</span></div>
+      <p class="upload-signin-note" id="upload-auth-note">Sign in to submit a photo. Uploaded images are available to the admin team.</p>
+      <form id="photo-upload-form">
+        <label class="drop-zone" for="photo-files" id="drop-zone"><span class="upload-icon" aria-hidden="true">↑</span><strong>Choose photos to upload</strong><span>JPEG, PNG or WebP · up to 10 MB each</span><input id="photo-files" type="file" accept="image/jpeg,image/png,image/webp" multiple hidden></label>
+        <div class="upload-preview-list" id="upload-preview-list" aria-live="polite"></div>
+        <label class="upload-caption-label" for="photo-caption">What should the team know? <span>Optional</span></label><textarea id="photo-caption" maxlength="300" rows="3" placeholder="Describe the location or road condition…"></textarea>
+        <button class="route-button upload-submit" id="upload-submit" type="submit" disabled>Upload photos <span>↗</span></button>
+        <p id="upload-status" class="upload-status" role="status" aria-live="polite" hidden></p>
+      </form>
+    </section>
+    <section class="admin-gallery" id="admin-gallery" aria-labelledby="gallery-title" hidden><div class="gallery-heading"><div><span class="panel-eyebrow">RESTRICTED ACCESS</span><h2 id="gallery-title">Admin photo archive</h2><p>Photos are stored in Firebase Storage and only visible to the designated admin account.</p></div><button class="gallery-refresh" id="gallery-refresh" type="button">↻ Refresh</button></div><div id="gallery-status" class="gallery-status" role="status" aria-live="polite"></div><div class="photo-gallery" id="photo-gallery"></div></section>
+    <section class="gallery-locked" id="gallery-locked" hidden><span aria-hidden="true">⌑</span><div><strong>Admin access only</strong><p>Sign in with an authorized admin account to view the photo archive.</p></div></section>
+    <footer class="rescue-footer"><span>RescueRoute <span>·</span> Community reports, handled with care.</span><span>Photo access is restricted to the project admin.</span></footer>
+  </main>
   <main class="auth-shell">
     <section class="form-panel" aria-labelledby="form-heading">
       <header class="panel-header"><span class="wordmark">vertex.</span><span class="preview-badge">YOUR ACCOUNT</span></header>

@@ -1,15 +1,14 @@
-# Vertex — Firebase login & registration
+# RescueRoute — city access and field photos
 
-A responsive HTML/CSS/JavaScript interface connected to Firebase Authentication in project `waicy-9666a`.
+A responsive RescueRoute city access map with Firebase Authentication and a secure field photo upload page in project `waicy-9666a`.
 
 ## Features
 
-- Email/password registration, including a display name.
-- Login and a signed-in account view.
-- Firebase-managed sessions: “Remember me” uses local persistence; unchecked uses tab/session persistence.
-- Logout, inline validation, loading states, safe error messages, and password visibility.
-- Password reset through Firebase's hosted email action page.
-- Google/GitHub controls are omitted because those providers are not enabled in this project.
+- Seoul city map with separate main road, motorcycle road, and footpath overlays.
+- Vehicle mode filters, city search, map controls, and a user-initiated current-location option.
+- Email/password registration, login, password reset, and a signed-in account view.
+- Photo uploads with captions, previews, size/type validation, and a private admin gallery.
+- Firebase Storage holds uploaded photos across devices and sessions. Storage rules allow signed-in users to add images, while only the verified admin email can read or delete them.
 
 ## Run locally
 
@@ -17,15 +16,17 @@ Run `python3 -m http.server 4173 --directory dist` from this folder, then visit 
 
 There is no build step. `dist/firebase-client.js` imports Firebase's modular Web SDK v12.19.0 from the official CDN. `dist/firebase-config.js` contains the public configuration retrieved from the existing Firebase Web App.
 
-## Authentication and credentials
+## Authentication, photos, and credentials
 
-Firebase is the managed authentication backend. Account creation, password checks, reset emails, profiles, and token refresh run through Firebase Authentication. Passwords are sent directly to Firebase over HTTPS; this site never saves or logs them. Session tokens are managed by the Firebase SDK according to the user's persistence choice.
+Firebase Authentication manages accounts and sessions. Passwords are sent directly to Firebase over HTTPS; this site never saves or logs them. Session tokens are managed by the Firebase SDK according to the user's persistence choice. Firebase Storage stores uploaded photo files and their caption/uploader metadata.
+
+`storage.rules` is the server-side access boundary. Replace `ADMIN_EMAIL_PLACEHOLDER` with the designated Firebase account email before deployment and deploy the rules to project `waicy-9666a`. The browser-side `dist/photo-config.js` must use the same email for the admin interface; it only controls the display, while Firebase Storage rules enforce access. Uploads remain paused until both are configured.
 
 The supplied Admin SDK service-account file remains outside this repository and the deployed static assets. It was used locally to inspect/configure the project. It is not required at runtime and must never be put in `dist`, committed, or sent to visitors. `.gitignore` excludes common service-account filenames.
 
 The public Firebase web configuration/API key identifies the project; it is not the Admin SDK credential. Future application data/API endpoints must independently verify Firebase ID tokens or enforce Firebase Security Rules. Hiding the login UI is not an authorization boundary.
 
-The login page is published for public access so anyone with the link can create their own Firebase account or sign in. Firebase still checks credentials before returning an authenticated session.
+The public Site allows anyone with its link to create an account or sign in. Photo archive access remains restricted by Firebase Storage rules.
 
 ## Documentation
 

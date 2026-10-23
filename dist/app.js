@@ -65,6 +65,23 @@
     if (initializationError) message($('form-status'), initializationError, true);
     updateControls();
   }
+  function showAccount() {
+    homeView.hidden = true;
+    $('uploads-page').hidden = true;
+    document.body.classList.add('account-open');
+    document.querySelector('.auth-shell').style.display = 'grid';
+    if (!['#login', '#signup'].includes(location.hash)) history.pushState(null, '', '#login');
+    setMode(location.hash === '#signup' ? 'signup' : 'login');
+  }
+  const homeView = $('rescue-home');
+  window.addEventListener('rescue:account', showAccount);
+  window.addEventListener('rescue:map', () => {
+    document.body.classList.remove('account-open');
+    document.querySelector('.auth-shell').style.display = 'none';
+    homeView.hidden = false;
+    $('uploads-page').hidden = true;
+    if (location.hash !== '#map') history.pushState(null, '', '#map');
+  });
   function navigate(nextMode) {
     if (pending) return;
     setMode(nextMode);
@@ -132,6 +149,17 @@
     });
   });
   const syncLocation = () => {
+    if (location.hash === '#map' || !location.hash) {
+      document.body.classList.remove('account-open');
+      homeView.hidden = false;
+      document.querySelector('.auth-shell').style.display = 'none';
+      return;
+    }
+    if (location.hash === '#login' || location.hash === '#signup') {
+      document.body.classList.add('account-open');
+      homeView.hidden = true;
+      document.querySelector('.auth-shell').style.display = 'grid';
+    }
     const nextMode = location.hash === '#signup' ? 'signup' : 'login';
     if (nextMode !== mode) setMode(nextMode);
   };
@@ -286,7 +314,13 @@
     }
   });
 
-  setMode(location.hash.slice(1));
+  const initialRoute = location.hash.slice(1);
+  if (initialRoute === 'login' || initialRoute === 'signup') {
+    document.body.classList.add('account-open');
+    homeView.hidden = true;
+    document.querySelector('.auth-shell').style.display = 'grid';
+  }
+  setMode(initialRoute);
   // Catch module/network failures so visitors get a useful error instead of an inert form.
   import('./firebase-client.js').then(async (client) => {
     firebase = client;

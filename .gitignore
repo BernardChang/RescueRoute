@@ -8,3 +8,5 @@
 .env
 .env.*
 !.env.example
+logncode.txt
+__pycache__/

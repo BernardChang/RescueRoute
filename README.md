@@ -7,13 +7,14 @@ A responsive RescueRoute city map with road-access overlays, Firebase Authentica
 - Seoul city map with main road, motorcycle road, and footpath overlays, travel-mode filters, place search, and current location.
 - Email/password registration, login, password reset, and signed-in account view through Firebase Authentication.
 - Photo submission with captions, previews, file validation, and an admin gallery.
+- OpenAI vision analysis runs automatically when a photo is uploaded. The admin gallery keeps the original photo and displays the findings beneath it, with a retry action if analysis is temporarily unavailable.
 - Photos are stored in IndexedDB in the current browser, so they remain available after reloads on this device. They do not sync to other devices and can be cleared if browser site data is removed.
 
 ## Run locally
 
-Run `python3 -m http.server 4173 --directory dist` from this folder, then visit `http://localhost:4173`. Serve over HTTP locally or HTTPS in production; do not open the HTML as a `file://` URL.
+Run `python3 server.py` from this folder, then visit `http://localhost:4173`. The server hosts `dist/` and provides the authenticated `/api/analyze` endpoint. Serve over HTTP locally or HTTPS in production; do not open the HTML as a `file://` URL.
 
-There is no build step. The app's HTML, CSS, and JavaScript files are served from `dist/`. Firebase's modular Web SDK and map tiles are loaded from their online providers. `dist/firebase-config.js` contains the public configuration for the existing Firebase Web App.
+The server reads `OPENAI_API_KEY` from the environment. For this workspace it also accepts the existing `GPT_API_KEY=...` entry in the parent `logncode.txt` file. The key stays server-side and is never sent to the browser. Uploaded images are sent to OpenAI for analysis; the returned findings are saved alongside each photo in IndexedDB. The analysis endpoint validates the Firebase sign-in token and limits each account to 30 analyses per hour. Firebase's modular Web SDK and map tiles are loaded from their online providers. `dist/firebase-config.js` contains the public configuration for the existing Firebase Web App.
 
 The map uses the standard `https://tile.openstreetmap.org/{z}/{x}/{y}.png` endpoint. It shows visible OpenStreetMap contributor attribution and sends a valid origin referrer. Leaflet requests tiles for the visible map area and the browser handles caching according to the tile server's response headers. The app does not prefetch or save tiles for offline use. Serve the site over HTTP or HTTPS; opening the HTML as a `file://` URL does not provide a usable web referrer.
 

@@ -38,6 +38,62 @@ async function withPhotoStore(mode, operation) {
 function savePhoto(photo) {
   return withPhotoStore('readwrite', (store) => store.put(photo));
 }
+async function analyzePhoto(blob, activeUser) {
+  if (!activeUser) throw new Error('Sign in again before analyzing a photo.');
+  const token = await activeUser.getIdToken();
+  const response = await fetch('/api/analyze', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': blob.type || 'application/octet-stream' },
+    body: blob,
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(result.error || 'Photo analysis is temporarily unavailable.');
+  const assessment = result.analysis;
+  if (!assessment || typeof assessment.can_vehicles_pass !== 'boolean' ||
+      typeof assessment.obstruction_exists !== 'boolean' || typeof assessment.dead_end !== 'boolean' ||
+      !Array.isArray(assessment.obstructing_objects)) {
+    throw new Error('The photo assessment returned an invalid result. Please retry.');
+  }
+  return assessment;
+}
+function normalizeAssessment(value) {
+  if (typeof value === 'string') {
+    try { value = JSON.parse(value); } catch { return null; }
+  }
+  if (!value || typeof value !== 'object') return null;
+  return typeof value.can_vehicles_pass === 'boolean' &&
+    typeof value.obstruction_exists === 'boolean' && typeof value.dead_end === 'boolean' &&
+    Array.isArray(value.obstructing_objects) ? value : null;
+}
+function renderAssessment(container, assessment) {
+  const table = document.createElement('table'); table.className = 'assessment-table';
+  const tbody = document.createElement('tbody');
+  const rows = [
+    ['Can vehicles pass through?', assessment.can_vehicles_pass],
+    ['Is a path obstruction visible?', assessment.obstruction_exists],
+    ['Does the alley appear to end here?', assessment.dead_end],
+  ];
+  rows.forEach(([label, answer]) => {
+    const row = document.createElement('tr');
+    const heading = document.createElement('th'); heading.scope = 'row'; heading.textContent = label;
+    const value = document.createElement('td'); value.textContent = answer ? 'True' : 'False';
+    row.append(heading, value); tbody.append(row);
+  });
+  table.append(tbody); container.append(table);
+
+  const objectsHeading = document.createElement('strong');
+  objectsHeading.className = 'assessment-objects-title';
+  objectsHeading.textContent = 'Visible objects impeding the path';
+  container.append(objectsHeading);
+  const list = document.createElement('ul'); list.className = 'assessment-objects';
+  assessment.obstructing_objects.forEach((objectName) => {
+    const item = document.createElement('li'); item.textContent = objectName; list.append(item);
+  });
+  if (!assessment.obstructing_objects.length) {
+    const item = document.createElement('li'); item.textContent = 'None visible'; list.append(item);
+  }
+  container.append(list);
+}
 function deletePhoto(id) {
   return withPhotoStore('readwrite', (store) => store.delete(id));
 }
@@ -83,7 +139,7 @@ if (form) {
       ? `Signed in as ${user.email}. Photos are saved in this browser for the RescueRoute admin team.`
       : 'Sign in to submit a photo. Photos are saved on this device for the RescueRoute admin team.';
     submit.disabled = busy || !user || selected.length === 0;
-    submit.innerHTML = busy ? 'Saving…' : 'Save photos <span>↗</span>';
+    submit.innerHTML = busy ? 'Analyzing…' : 'Analyze & save <span>↗</span>';
     locked.querySelector('strong').textContent = 'Admin access only';
     locked.querySelector('p').textContent = 'Sign in with the authorized admin account on this device to view the local photo archive.';
     if (admin && user) loadGallery();
@@ -125,22 +181,37 @@ if (form) {
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
     if (!user || !selected.length || busy) return;
-    busy = true; submit.disabled = true; submit.textContent = 'Saving…'; status($('upload-status'), 'Saving photos in this browser…');
+    busy = true; submit.disabled = true; submit.textContent = 'Analyzing…'; status($('upload-status'), 'Analyzing and saving your photos…');
     const files = [...selected];
     const caption = $('photo-caption').value.trim().slice(0, 300);
     let completed = 0;
+    let analyzed = 0;
+    let analysisFailures = 0;
     try {
       for (const file of files) {
+        let analysis = '';
+        let analysisError = '';
+        status($('upload-status'), `Analyzing photo ${completed + 1} of ${files.length}…`);
+        try {
+          analysis = await analyzePhoto(file, user);
+          analyzed += 1;
+        } catch (error) {
+          analysisError = error?.message || 'Photo analysis is temporarily unavailable.';
+          analysisFailures += 1;
+        }
         await savePhoto({
           id: crypto.randomUUID(), blob: file, name: file.name, type: file.type, size: file.size,
           caption, uploaderEmail: user.email || '', uploaderName: user.displayName || '',
           uploadedAt: new Date().toISOString(),
+          analysis, analysisStatus: analysis ? 'complete' : 'error', analysisError,
+          analyzedAt: analysis ? new Date().toISOString() : '',
         });
         completed += 1;
         status($('upload-status'), `Saved ${completed} of ${files.length} ${files.length === 1 ? 'photo' : 'photos'} locally…`);
       }
       selected = []; renderPreviews(); form.reset();
-      status($('upload-status'), `${completed} ${completed === 1 ? 'photo was' : 'photos were'} saved in this browser for the RescueRoute admin team.`);
+      const summary = `${completed} ${completed === 1 ? 'photo was' : 'photos were'} saved in this browser. ${analyzed} ${analyzed === 1 ? 'photo was' : 'photos were'} analyzed.`;
+      status($('upload-status'), analysisFailures ? `${summary} ${analysisFailures} ${analysisFailures === 1 ? 'analysis needs' : 'analyses need'} a retry in the admin archive.` : summary);
       if (isAdmin()) await loadGallery();
     } catch (error) {
       const message = error?.name === 'QuotaExceededError'
@@ -167,6 +238,44 @@ if (form) {
         const title = document.createElement('strong'); title.textContent = photo.name || 'Photo'; body.append(title);
         if (photo.caption) { const copy = document.createElement('p'); copy.textContent = photo.caption; body.append(copy); }
         const dateLine = document.createElement('small'); dateLine.textContent = `${photo.uploaderEmail || 'RescueRoute user'} · ${new Date(photo.uploadedAt).toLocaleString()}`; body.append(dateLine);
+        const analysisPanel = document.createElement('section'); analysisPanel.className = 'photo-analysis';
+        const analysisTitle = document.createElement('strong'); analysisTitle.className = 'photo-analysis-title'; analysisTitle.textContent = 'AI access assessment'; analysisPanel.append(analysisTitle);
+        const assessment = normalizeAssessment(photo.analysis);
+        const analysisCopy = document.createElement('p');
+        if (assessment) renderAssessment(analysisPanel, assessment);
+        else {
+          analysisCopy.textContent = photo.analysisError || (photo.analysis ? 'Reanalyze this photo to create the new table.' : 'This photo has not been analyzed yet.');
+          analysisPanel.append(analysisCopy);
+        }
+        if (!assessment) {
+          const analyzeButton = document.createElement('button'); analyzeButton.type = 'button'; analyzeButton.className = 'text-button photo-analysis-retry';
+          analyzeButton.textContent = photo.analysisStatus === 'error' ? 'Retry analysis' : (photo.analysis ? 'Reanalyze as table' : 'Analyze photo');
+          analyzeButton.addEventListener('click', async () => {
+            if (!user) {
+              analysisCopy.textContent = 'Sign in to RescueRoute with the admin account in this browser, then retry the analysis.';
+              location.hash = '#login';
+              return;
+            }
+            if (!isAdmin()) {
+              analysisCopy.textContent = 'Sign in with the authorized RescueRoute admin account to analyze this photo.';
+              return;
+            }
+            analyzeButton.disabled = true; analyzeButton.textContent = 'Analyzing…';
+            try {
+              const analysis = await analyzePhoto(photo.blob, user);
+              await savePhoto({ ...photo, analysis, analysisStatus: 'complete', analysisError: '', analyzedAt: new Date().toISOString() });
+              await loadGallery();
+            } catch (error) {
+              analysisCopy.textContent = error?.message || 'Photo analysis is temporarily unavailable.';
+              analyzeButton.disabled = false; analyzeButton.textContent = 'Retry analysis';
+            }
+          });
+          analysisPanel.append(analyzeButton);
+        } else {
+          const analysisDate = document.createElement('small'); analysisDate.textContent = photo.analyzedAt ? `Analyzed ${new Date(photo.analyzedAt).toLocaleString()}` : 'Analyzed with OpenAI';
+          analysisPanel.append(analysisDate);
+        }
+        body.append(analysisPanel);
         const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'text-button'; remove.textContent = 'Delete photo'; remove.addEventListener('click', async () => {
           if (!isAdmin()) return;
           remove.disabled = true;

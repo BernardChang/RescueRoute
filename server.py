@@ -13,24 +13,43 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 DIST = ROOT / 'dist'
-FIREBASE_PROJECT_ID = 'waicy-9666a'
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 MAX_ANALYSES_PER_HOUR = 30
 RATE_WINDOW = 60 * 60
 ANALYSIS_TIMES = {}
 
 
+def load_local_env():
+    env_file = ROOT / '.env.local'
+    if not env_file.is_file():
+        return
+    for line in env_file.read_text(encoding='utf-8').splitlines():
+        line = line.strip()
+        if not line or line.startswith('#') or '=' not in line:
+            continue
+        name, value = line.split('=', 1)
+        name = name.strip()
+        value = value.strip().strip('"').strip("'")
+        if name and name not in os.environ:
+            os.environ[name] = value
+
+
+load_local_env()
+
+
 def load_api_key():
-    key = os.environ.get('OPENAI_API_KEY', '').strip()
-    if key:
-        return key
-    key_file = ROOT.parent / 'logncode.txt'
-    if not key_file.is_file():
-        return ''
-    raw = key_file.read_text(encoding='utf-8').strip()
-    if '=' in raw:
-        raw = raw.split('=', 1)[1].strip()
-    return raw.strip().strip('"').strip("'")
+    return os.environ.get('OPENAI_API_KEY', '').strip()
+
+
+def firebase_config():
+    return {
+        'apiKey': os.environ.get('NEXT_PUBLIC_FIREBASE_API_KEY', '').strip(),
+        'authDomain': os.environ.get('NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN', '').strip(),
+        'projectId': os.environ.get('NEXT_PUBLIC_FIREBASE_PROJECT_ID', '').strip(),
+        'appId': os.environ.get('NEXT_PUBLIC_FIREBASE_APP_ID', '').strip(),
+        'messagingSenderId': os.environ.get('NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID', '').strip(),
+        'storageBucket': os.environ.get('NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET', '').strip(),
+    }
 
 
 def json_bytes(payload):
@@ -41,10 +60,8 @@ def verify_firebase_token(token):
     # Firebase ID tokens are validated by Firebase Auth's account lookup API.
     # Google tokeninfo is intended for Google OAuth ID tokens and may reject
     # otherwise valid Firebase sessions.
-    try:
-        config = (DIST / 'firebase-config.js').read_text(encoding='utf-8')
-        api_key = re.search(r'"apiKey"\s*:\s*"([^"]+)"', config).group(1)
-    except (OSError, AttributeError):
+    api_key = os.environ.get('FIREBASE_API_KEY', '').strip()
+    if not api_key:
         return None
     endpoint = 'https://identitytoolkit.googleapis.com/v1/accounts:lookup?' + urllib.parse.urlencode({'key': api_key})
     request = urllib.request.Request(
@@ -168,7 +185,16 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == '/api/health':
-            return self.send_json({'status': 'ok', 'analysisConfigured': bool(load_api_key())})
+            return self.send_json({
+                'status': 'ok',
+                'analysisConfigured': bool(load_api_key()),
+                'firebaseConfigured': all(firebase_config().values()),
+            })
+        if self.path == '/api/firebase-config':
+            config = firebase_config()
+            if not all(config.values()):
+                return self.send_json({'error': 'Firebase is not configured on this website.'}, 503)
+            return self.send_json(config)
         if self.path.startswith('/api/'):
             return self.send_json({'error': 'Not found'}, 404)
         return super().do_GET()

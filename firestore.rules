@@ -1,0 +1,44 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{userId}/routeGraphs/openstreetmap {
+      allow read: if request.auth != null && request.auth.uid == userId;
+      allow create, update: if request.auth != null
+        && request.auth.uid == userId
+        && request.resource.data.keys().hasAll([
+          'nodes', 'edges', 'nextId', 'startId', 'endId', 'updatedAt'
+        ])
+        && request.resource.data.keys().hasOnly([
+          'nodes', 'edges', 'nextId', 'startId', 'endId', 'updatedAt'
+        ])
+        && request.resource.data.nodes is list
+        && request.resource.data.nodes.size() <= 5000
+        && request.resource.data.edges is list
+        && request.resource.data.edges.size() <= 15000
+        && request.resource.data.nextId is int
+        && (request.resource.data.startId == null || request.resource.data.startId is string)
+        && (request.resource.data.endId == null || request.resource.data.endId is string)
+        && request.resource.data.updatedAt == request.time;
+    }
+
+    match /cityMaps/manila {
+      function signedIn() {
+        return request.auth != null;
+      }
+
+      function validStreetMap() {
+        return request.resource.data.keys().hasOnly(['nodes', 'connectors', 'updatedAt'])
+          && request.resource.data.keys().hasAll(['nodes', 'connectors', 'updatedAt'])
+          && request.resource.data.nodes is list
+          && request.resource.data.nodes.size() <= 2000
+          && request.resource.data.connectors is list
+          && request.resource.data.connectors.size() <= 4000
+          && request.resource.data.updatedAt is number;
+      }
+
+      allow get: if signedIn();
+      allow create, update: if signedIn() && validStreetMap();
+    }
+  }
+}

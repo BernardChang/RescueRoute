@@ -28,12 +28,19 @@ service cloud.firestore {
       }
 
       function validStreetMap() {
-        return request.resource.data.keys().hasOnly(['nodes', 'connectors', 'updatedAt'])
+        return ((
+          request.resource.data.keys().hasOnly(['nodes', 'edges', 'updatedAt'])
+          && request.resource.data.keys().hasAll(['nodes', 'edges', 'updatedAt'])
+          && request.resource.data.edges is list
+          && request.resource.data.edges.size() <= 4000
+        ) || (
+          request.resource.data.keys().hasOnly(['nodes', 'connectors', 'updatedAt'])
           && request.resource.data.keys().hasAll(['nodes', 'connectors', 'updatedAt'])
-          && request.resource.data.nodes is list
-          && request.resource.data.nodes.size() <= 2000
           && request.resource.data.connectors is list
           && request.resource.data.connectors.size() <= 4000
+        ))
+          && request.resource.data.nodes is list
+          && request.resource.data.nodes.size() <= 2000
           && request.resource.data.updatedAt is number;
       }
 

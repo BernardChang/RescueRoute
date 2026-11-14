@@ -32,19 +32,65 @@
   const nodeName=document.getElementById('street-name');
   const nodeType=document.getElementById('street-type');
   const customLayers={main:L.layerGroup().addTo(map),moto:L.layerGroup().addTo(map),foot:L.layerGroup().addTo(map)};
-  let graph={nodes:[],connectors:[]};let editMode='';let connectStart=null;let cloudClient=null;let stopCloudSync=null;let cloudWriteQueue=Promise.resolve();let cloudSyncReady=false;
-  try{const saved=JSON.parse(localStorage.getItem(storageKey)||'null');if(saved&&Array.isArray(saved.nodes)&&Array.isArray(saved.connectors))graph=saved;}catch{}
+  const normalizeGraph=(saved)=>({
+    nodes:Array.isArray(saved?.nodes)?saved.nodes:[],
+    edges:Array.isArray(saved?.edges)?saved.edges:Array.isArray(saved?.connectors)?saved.connectors:[]
+  });
+  let graph={nodes:[],edges:[]};
+  let editMode='';
+  let edgeStart=null;
+  let cloudClient=null;
+  let stopCloudSync=null;
+  let cloudWriteQueue=Promise.resolve();
+  let cloudSyncReady=false;
+  try{const saved=JSON.parse(localStorage.getItem(storageKey)||'null');if(saved&&Array.isArray(saved.nodes))graph=normalizeGraph(saved);}catch{}
   const safeText=(value)=>String(value).replace(/[&<>"']/g,(character)=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[character]));
-  const persistGraph=()=>{try{localStorage.setItem(storageKey,JSON.stringify(graph));}catch{editorStatus.textContent='Could not save this map in this browser.';return;}if(!cloudClient?.auth.currentUser){editorStatus.textContent=`Saved on this device · ${graph.nodes.length} nodes · ${graph.connectors.length} streets. Sign in to sync across devices.`;return;}if(!cloudSyncReady){editorStatus.textContent='Connecting to Firebase…';return;}const payload={nodes:graph.nodes,connectors:graph.connectors,updatedAt:Date.now()};cloudWriteQueue=cloudWriteQueue.then(()=>cloudClient.setDoc(cloudClient.doc(cloudClient.db,'cityMaps','manila'),payload)).then(()=>{editorStatus.textContent=`Synced to Firebase · ${graph.nodes.length} nodes · ${graph.connectors.length} streets.`;}).catch((error)=>{console.error('Street map sync failed',error);editorStatus.textContent='Firebase save failed. Check Firestore setup and security rules.';});};
-  const modeButtons=[['add-street-node','add'],['connect-streets','connect']];
-  function renderGraph(){Object.values(customLayers).forEach((layer)=>layer.clearLayers());for(const road of graph.connectors){const from=graph.nodes.find((node)=>node.id===road.from),to=graph.nodes.find((node)=>node.id===road.to);if(!from||!to)continue;const line=L.polyline([[from.lat,from.lng],[to.lat,to.lng]],{color:colors[road.type]||colors.main,weight:6,opacity:.95,lineCap:'round'}).addTo(customLayers[road.type]||customLayers.main);line.bindPopup(`<div class="street-popup"><strong>${safeText(road.name||'Street connector')}</strong><br>${safeText(from.name||'Node')} ↔ ${safeText(to.name||'Node')}<br><button type="button" data-delete-connector="${safeText(road.id)}">Delete street</button></div>`);line.on('popupopen',(event)=>event.popup.getElement().querySelector('[data-delete-connector]')?.addEventListener('click',()=>{graph.connectors=graph.connectors.filter((item)=>item.id!==road.id);renderGraph();persistGraph();map.closePopup();}));}
-    for(const node of graph.nodes){const icon=L.divIcon({className:'',html:`<span class="custom-node-icon${connectStart===node.id?' is-selected':''}">${safeText(node.name?.slice(0,1)||'•')}</span>`,iconSize:[24,24],iconAnchor:[12,12]});const marker=L.marker([node.lat,node.lng],{icon,draggable:true}).addTo(map);marker.on('dragend',()=>{const point=marker.getLatLng();node.lat=point.lat;node.lng=point.lng;renderGraph();persistGraph();});marker.on('click',()=>{if(editMode==='connect'){if(!connectStart){connectStart=node.id;editorStatus.textContent=`Start selected: ${node.name||'Node'}. Choose the next node.`;renderGraph();return;}if(connectStart===node.id){connectStart=null;editorStatus.textContent='Choose two different nodes to connect.';renderGraph();return;}const start=graph.nodes.find((item)=>item.id===connectStart);graph.connectors.push({id:crypto.randomUUID(),from:start.id,to:node.id,name:nodeName.value.trim()||`${start.name||'Street'} – ${node.name||'Street'}`,type:nodeType.value});connectStart=null;editMode='';updateModeButtons();renderGraph();persistGraph();return;}marker.bindPopup(`<div class="street-popup"><strong>${safeText(node.name||'Map node')}</strong><br>${node.lat.toFixed(5)}, ${node.lng.toFixed(5)}<br><button type="button" data-delete-node="${safeText(node.id)}">Delete node</button></div>`).openPopup();setTimeout(()=>document.querySelector('[data-delete-node]')?.addEventListener('click',()=>{graph.nodes=graph.nodes.filter((item)=>item.id!==node.id);graph.connectors=graph.connectors.filter((item)=>item.from!==node.id&&item.to!==node.id);renderGraph();persistGraph();map.closePopup();},{once:true}),0);});}
-    for(const [type,layer] of Object.entries(customLayers)){const input=document.querySelector(`[data-layer="${type}"]`);if(input?.checked)layer.addTo(map);}}
+  const graphSummary=()=>`${graph.nodes.length} nodes · ${graph.edges.length} ${graph.edges.length===1?'edge':'edges'}`;
+  const persistGraph=()=>{
+    try{localStorage.setItem(storageKey,JSON.stringify(graph));}
+    catch{editorStatus.textContent='Could not save this map in this browser.';return;}
+    if(!cloudClient?.auth.currentUser){editorStatus.textContent=`Saved on this device · ${graphSummary()}. Sign in to sync across devices.`;return;}
+    if(!cloudSyncReady){editorStatus.textContent='Connecting to Firebase…';return;}
+    const payload={nodes:graph.nodes,edges:graph.edges,updatedAt:Date.now()};
+    cloudWriteQueue=cloudWriteQueue.then(()=>cloudClient.setDoc(cloudClient.doc(cloudClient.db,'cityMaps','manila'),payload)).then(()=>{editorStatus.textContent=`Synced to Firebase · ${graphSummary()}.`;}).catch((error)=>{console.error('Street map sync failed',error);editorStatus.textContent='Firebase save failed. Check Firestore setup and security rules.';});
+  };
+  const modeButtons=[['add-street-node','add'],['add-street-edge','edge']];
+  function renderGraph(){
+    Object.values(customLayers).forEach((layer)=>layer.clearLayers());
+    for(const edge of graph.edges){
+      const from=graph.nodes.find((node)=>node.id===edge.from);
+      const to=graph.nodes.find((node)=>node.id===edge.to);
+      if(!from||!to)continue;
+      const line=L.polyline([[from.lat,from.lng],[to.lat,to.lng]],{color:colors[edge.type]||colors.main,weight:6,opacity:.95,lineCap:'round'}).addTo(customLayers[edge.type]||customLayers.main);
+      line.bindPopup(`<div class="street-popup"><strong>${safeText(edge.name||'Street edge')}</strong><br>${safeText(from.name||'Node')} ↔ ${safeText(to.name||'Node')}<br><button type="button" data-delete-edge="${safeText(edge.id)}">Delete edge</button></div>`);
+      line.on('popupopen',(event)=>event.popup.getElement().querySelector('[data-delete-edge]')?.addEventListener('click',()=>{graph.edges=graph.edges.filter((item)=>item.id!==edge.id);renderGraph();persistGraph();map.closePopup();},{once:true}));
+    }
+    for(const node of graph.nodes){
+      const icon=L.divIcon({className:'',html:`<span class="custom-node-icon${edgeStart===node.id?' is-selected':''}">${safeText(node.name?.slice(0,1)||'•')}</span>`,iconSize:[24,24],iconAnchor:[12,12]});
+      const marker=L.marker([node.lat,node.lng],{icon,draggable:true}).addTo(map);
+      marker.on('dragend',()=>{const point=marker.getLatLng();node.lat=point.lat;node.lng=point.lng;renderGraph();persistGraph();});
+      marker.on('click',()=>{
+        if(editMode==='edge'){
+          if(!edgeStart){edgeStart=node.id;editorStatus.textContent=`Start node selected: ${node.name||'Node'}. Choose the other node.`;renderGraph();return;}
+          if(edgeStart===node.id){edgeStart=null;editorStatus.textContent='Choose two different nodes for an edge.';renderGraph();return;}
+          const start=graph.nodes.find((item)=>item.id===edgeStart);
+          if(!start){edgeStart=null;editorStatus.textContent='Start node is unavailable. Select the first node again.';renderGraph();return;}
+          const alreadyConnected=graph.edges.some((item)=>(item.from===start.id&&item.to===node.id)||(item.from===node.id&&item.to===start.id));
+          if(alreadyConnected){edgeStart=null;editMode='';updateModeButtons();editorStatus.textContent='These nodes already have an edge.';renderGraph();return;}
+          graph.edges.push({id:crypto.randomUUID(),from:start.id,to:node.id,name:nodeName.value.trim()||`${start.name||'Node'} – ${node.name||'Node'}`,type:nodeType.value});
+          edgeStart=null;editMode='';updateModeButtons();renderGraph();persistGraph();return;
+        }
+        marker.bindPopup(`<div class="street-popup"><strong>${safeText(node.name||'Map node')}</strong><br>${node.lat.toFixed(5)}, ${node.lng.toFixed(5)}<br><button type="button" data-delete-node="${safeText(node.id)}">Delete node</button></div>`).openPopup();
+        setTimeout(()=>document.querySelector('[data-delete-node]')?.addEventListener('click',()=>{graph.nodes=graph.nodes.filter((item)=>item.id!==node.id);graph.edges=graph.edges.filter((item)=>item.from!==node.id&&item.to!==node.id);edgeStart=null;renderGraph();persistGraph();map.closePopup();},{once:true}),0);
+      });
+    }
+    for(const [type,layer] of Object.entries(customLayers)){const input=document.querySelector(`[data-layer="${type}"]`);if(input?.checked)layer.addTo(map);}
+  }
   function updateModeButtons(){for(const [id,mode] of modeButtons)document.getElementById(id).classList.toggle('active',editMode===mode);document.getElementById('city-map').style.cursor=editMode==='add'?'crosshair':'';}
-  modeButtons.forEach(([id,mode])=>document.getElementById(id).addEventListener('click',()=>{editMode=editMode===mode?'':mode;connectStart=null;updateModeButtons();editorStatus.textContent=editMode==='add'?'Click the map to place an intersection node.':editMode==='connect'?'Choose two nodes to draw a street between them.':'Editor ready. Add nodes by clicking the map.';renderGraph();}));
-  document.getElementById('stop-street-edit').addEventListener('click',()=>{editMode='';connectStart=null;updateModeButtons();editorStatus.textContent='Editor ready. Drag nodes to adjust their positions.';renderGraph();});
+  modeButtons.forEach(([id,mode])=>document.getElementById(id).addEventListener('click',()=>{editMode=editMode===mode?'':mode;edgeStart=null;updateModeButtons();editorStatus.textContent=editMode==='add'?'Click the map to place an intersection node.':editMode==='edge'?'Select two nodes to create an edge between them.':'Editor ready. Add nodes or edges to the map.';renderGraph();}));
+  document.getElementById('stop-street-edit').addEventListener('click',()=>{editMode='';edgeStart=null;updateModeButtons();editorStatus.textContent='Editor ready. Drag nodes to adjust their positions.';renderGraph();});
   map.on('click',(event)=>{if(editMode!=='add')return;graph.nodes.push({id:crypto.randomUUID(),name:nodeName.value.trim()||`Node ${graph.nodes.length+1}`,lat:event.latlng.lat,lng:event.latlng.lng});editMode='';updateModeButtons();renderGraph();persistGraph();});
-  document.getElementById('clear-street-map').addEventListener('click',()=>{if(!graph.nodes.length&&!graph.connectors.length){editorStatus.textContent='There are no custom nodes or streets to clear.';return;}if(!window.confirm('Delete all nodes and custom streets saved in this browser?'))return;graph={nodes:[],connectors:[]};renderGraph();persistGraph();});
+  document.getElementById('clear-street-map').addEventListener('click',()=>{if(!graph.nodes.length&&!graph.edges.length){editorStatus.textContent='There are no custom nodes or edges to clear.';return;}if(!window.confirm('Delete all nodes and edges saved in this browser?'))return;graph={nodes:[],edges:[]};renderGraph();persistGraph();});
   for (const [key,road] of Object.entries(samples)) {
     const style={color:colors[key],weight:key==='main'?6:5,opacity:.94,lineCap:'round',lineJoin:'round',dashArray:key==='moto'?'10 8':key==='foot'?'2 9':null};
     const line=L.polyline(road.points,style).addTo(layers[key]);
@@ -100,7 +146,7 @@
     status.textContent='Finding your location…';
     navigator.geolocation.getCurrentPosition((position)=>{map.setView([position.coords.latitude,position.coords.longitude],15);document.getElementById('map-location-label').textContent='YOUR LOCATION';status.textContent='Map centred on your location. The sample overlays aren’t verified nearby roads.';},()=>{status.textContent='Location access was unavailable. Search for a city instead.';},{timeout:10000,maximumAge:60000});
   });
-  import('./firebase-client.js').then((client)=>{cloudClient=client;client.onAuthStateChanged(client.auth,(user)=>{stopCloudSync?.();stopCloudSync=null;cloudSyncReady=false;if(!user){editorStatus.textContent=`Saved on this device · ${graph.nodes.length} nodes · ${graph.connectors.length} streets. Sign in to sync across devices.`;return;}editorStatus.textContent='Loading the shared Manila street map from Firebase…';stopCloudSync=client.onSnapshot(client.doc(client.db,'cityMaps','manila'),(snapshot)=>{const remote=snapshot.exists()?snapshot.data():null;if(remote&&Array.isArray(remote.nodes)&&Array.isArray(remote.connectors)){graph={nodes:remote.nodes,connectors:remote.connectors};try{localStorage.setItem(storageKey,JSON.stringify(graph));}catch{}renderGraph();editorStatus.textContent=`Synced to Firebase · ${graph.nodes.length} nodes · ${graph.connectors.length} streets.`;}else if(graph.nodes.length||graph.connectors.length){cloudSyncReady=true;persistGraph();}else{cloudSyncReady=true;editorStatus.textContent='Connected to Firebase. Add nodes to build the Manila street map.';}cloudSyncReady=true;},(error)=>{console.error('Street map sync could not start',error);editorStatus.textContent='Firebase sync is unavailable. Check Firestore setup and security rules.';});},(error)=>{console.error('Firebase authentication could not be checked for map sync',error);editorStatus.textContent='Could not check sign-in. Street changes are saved in this browser.';});}).catch((error)=>{console.error('Firebase map sync could not load',error);editorStatus.textContent='Firebase sync could not load. Street changes are saved in this browser.';});
+  import('./firebase-client.js').then((client)=>{cloudClient=client;client.onAuthStateChanged(client.auth,(user)=>{stopCloudSync?.();stopCloudSync=null;cloudSyncReady=false;if(!user){editorStatus.textContent=`Saved on this device · ${graphSummary()}. Sign in to sync across devices.`;return;}editorStatus.textContent='Loading the shared Manila node-and-edge graph from Firebase…';stopCloudSync=client.onSnapshot(client.doc(client.db,'cityMaps','manila'),(snapshot)=>{const remote=snapshot.exists()?snapshot.data():null;const remoteEdges=Array.isArray(remote?.edges)?remote.edges:remote?.connectors;if(remote&&Array.isArray(remote.nodes)&&Array.isArray(remoteEdges)){graph={nodes:remote.nodes,edges:remoteEdges};try{localStorage.setItem(storageKey,JSON.stringify(graph));}catch{}renderGraph();editorStatus.textContent=`Synced to Firebase · ${graphSummary()}.`;}else if(graph.nodes.length||graph.edges.length){cloudSyncReady=true;persistGraph();}else{cloudSyncReady=true;editorStatus.textContent='Connected to Firebase. Add nodes and edges to build the Manila street map.';}cloudSyncReady=true;},(error)=>{console.error('Street map sync could not start',error);editorStatus.textContent='Firebase sync is unavailable. Check Firestore setup and security rules.';});},(error)=>{console.error('Firebase authentication could not be checked for map sync',error);editorStatus.textContent='Could not check sign-in. Street changes are saved in this browser.';});}).catch((error)=>{console.error('Firebase map sync could not load',error);editorStatus.textContent='Firebase sync could not load. Street changes are saved in this browser.';});
   function resizeMap(){if(!home.hidden)requestAnimationFrame(()=>map.invalidateSize());}
   const uploads=document.getElementById('uploads-page');
   function showPage(page,updateHash=false){

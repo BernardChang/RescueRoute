@@ -66,17 +66,18 @@
   function saveRouteSelection(){try{localStorage.setItem(routeStorageKey,JSON.stringify({startId:routeStartId,endId:routeEndId}));}catch{}}
   function setRouteEndpoint(role,node){if(role==='start')routeStartId=node.id;else routeEndId=node.id;saveRouteSelection();routeLayer.clearLayers();document.getElementById('route-result').hidden=true;updateRouteSelectionStatus();renderGraph();map.closePopup();}
   function allowedEdgeTypes(){return selected==='car'?new Set(['main']):selected==='motorcycle'?new Set(['main','moto']):new Set(['main','moto','foot']);}
-  function findShortestPath(){
+  function findShortestPath({useWeights=true,respectOneWay=true}={}){
     const start=graph.nodes.find((node)=>node.id===routeStartId);const end=graph.nodes.find((node)=>node.id===routeEndId);
     if(!start||!end)return {error:'Hover over a node and set both a start and an end point.'};
     if(start.id===end.id)return {nodes:[start],edges:[],distance:0};
     const nodeById=new Map(graph.nodes.map((node)=>[node.id,node]));const allowed=allowedEdgeTypes();const adjacency=new Map();
-    for(const edge of graph.edges){if(!allowed.has(edge.type||'main'))continue;const from=nodeById.get(edge.from),to=nodeById.get(edge.to);if(!from||!to)continue;const length=edgeLength(edge,from,to);const weightedLength=length*(1+weightScore(edge)+(weightScore(from)+weightScore(to))/2);for(const [nodeId,neighborId] of (edge.oneway?[[from.id,to.id]]:[[from.id,to.id],[to.id,from.id]])){if(!adjacency.has(nodeId))adjacency.set(nodeId,[]);adjacency.get(nodeId).push({edge,neighborId,length,cost:weightedLength});}}
+    for(const edge of graph.edges){if(!allowed.has(edge.type||'main'))continue;const from=nodeById.get(edge.from),to=nodeById.get(edge.to);if(!from||!to)continue;const length=edgeLength(edge,from,to);const weightedLength=length*(1+weightScore(edge)+(weightScore(from)+weightScore(to))/2);for(const [nodeId,neighborId] of (edge.oneway&&respectOneWay?[[from.id,to.id]]:[[from.id,to.id],[to.id,from.id]])){if(!adjacency.has(nodeId))adjacency.set(nodeId,[]);adjacency.get(nodeId).push({edge,neighborId,cost:useWeights?weightedLength:length});}}
     const open=new Set([start.id]);const cameFrom=new Map();const gScore=new Map([[start.id,0]]);const fScore=new Map([[start.id,distanceMeters(start,end)]]);
-    while(open.size){let current=null;for(const id of open)if(current===null||fScore.get(id)<fScore.get(current))current=id;if(current===end.id){const pathNodes=[end.id];const pathEdges=[];let cursor=end.id;while(cameFrom.has(cursor)){const previous=cameFrom.get(cursor);pathEdges.unshift(previous.edge);cursor=previous.nodeId;pathNodes.unshift(cursor);}const nodes=pathNodes.map((id)=>nodeById.get(id));let distance=0;for(let i=0;i<pathEdges.length;i++)distance+=edgeLength(pathEdges[i],nodes[i],nodes[i+1]);return {nodes,edges:pathEdges,distance,cost:gScore.get(end.id)};}open.delete(current);for(const neighbor of adjacency.get(current)||[]){const tentative=gScore.get(current)+neighbor.cost;if(tentative<(gScore.get(neighbor.neighborId)??Infinity)){cameFrom.set(neighbor.neighborId,{nodeId:current,edge:neighbor.edge});gScore.set(neighbor.neighborId,tentative);fScore.set(neighbor.neighborId,tentative+distanceMeters(nodeById.get(neighbor.neighborId),end));open.add(neighbor.neighborId);}}}
+    while(open.size){let current=null;for(const id of open)if(current===null||fScore.get(id)<fScore.get(current))current=id;if(current===end.id){const pathNodes=[end.id];const pathEdges=[];let cursor=end.id;while(cameFrom.has(cursor)){const previous=cameFrom.get(cursor);pathEdges.unshift(previous.edge);cursor=previous.nodeId;pathNodes.unshift(cursor);}const nodes=pathNodes.map((id)=>nodeById.get(id));let distance=0;let weightedCost=0;for(let i=0;i<pathEdges.length;i++){const edgeDistance=edgeLength(pathEdges[i],nodes[i],nodes[i+1]);distance+=edgeDistance;weightedCost+=edgeDistance*(1+weightScore(pathEdges[i])+(weightScore(nodes[i])+weightScore(nodes[i+1]))/2);}return {nodes,edges:pathEdges,distance,cost:weightedCost};}open.delete(current);for(const neighbor of adjacency.get(current)||[]){const tentative=gScore.get(current)+neighbor.cost;if(tentative<(gScore.get(neighbor.neighborId)??Infinity)){cameFrom.set(neighbor.neighborId,{nodeId:current,edge:neighbor.edge});gScore.set(neighbor.neighborId,tentative);fScore.set(neighbor.neighborId,tentative+distanceMeters(nodeById.get(neighbor.neighborId),end));open.add(neighbor.neighborId);}}}
     return {error:'No connected path was found for this travel mode.'};
   }
-  function drawRoute(path){routeLayer.clearLayers();const coordinates=[];for(let i=0;i<path.edges.length;i++){const segment=edgePoints(path.edges[i],path.nodes[i],path.nodes[i+1]);coordinates.push(...(coordinates.length?segment.slice(1):segment));}if(coordinates.length>1){const line=L.polyline(coordinates,{color:'#2865d7',weight:9,opacity:.92,lineCap:'round',lineJoin:'round'}).addTo(routeLayer);line.bringToFront();map.fitBounds(line.getBounds(),{padding:[42,42],maxZoom:17});}}
+  function drawRoute(path,style={}){const coordinates=[];for(let i=0;i<path.edges.length;i++){const segment=edgePoints(path.edges[i],path.nodes[i],path.nodes[i+1]);coordinates.push(...(coordinates.length?segment.slice(1):segment));}if(coordinates.length<2)return null;return L.polyline(coordinates,{color:style.color||'#2865d7',weight:style.weight||9,opacity:style.opacity??.92,dashArray:style.dashArray||null,lineCap:'round',lineJoin:'round'}).addTo(routeLayer);}
+  const sameRoute=(a,b)=>a.nodes.length===b.nodes.length&&a.nodes.every((node,index)=>node.id===b.nodes[index].id)&&a.edges.every((edge,index)=>edge.id===b.edges[index].id);
   const persistGraph=()=>{
     try{localStorage.setItem(storageKey,JSON.stringify(graph));}
     catch{editorStatus.textContent='Could not save this map in this browser.';return;}
@@ -167,9 +168,21 @@
   document.getElementById('show-route').addEventListener('click',()=>{
     const result=document.getElementById('route-result');
     const path=findShortestPath();
-    if(path.error){routeLayer.clearLayers();result.textContent=path.error;result.hidden=false;return;}
-    drawRoute(path);
-    result.textContent=path.edges.length?`Shortest route: ${formatDistance(path.distance)} across ${path.edges.length} ${path.edges.length===1?'edge':'edges'} for ${selected}. Impediment-adjusted cost: ${formatDistance(path.cost)} equivalent.`:'Start and end are the same node. Route distance and adjusted cost: 0 m.';
+    const distancePath=findShortestPath({useWeights:false});
+    const openDirectionPath=findShortestPath({useWeights:false,respectOneWay:false});
+    routeLayer.clearLayers();
+    if(path.error){result.textContent=path.error;result.hidden=false;return;}
+    const routeLines=[];
+    const routesAreSame=!distancePath.error&&sameRoute(path,distancePath);
+    if(!distancePath.error&&!routesAreSame)routeLines.push(drawRoute(distancePath,{color:'#7b8995',weight:7,opacity:.72,dashArray:'8 7'}));
+    routeLines.push(drawRoute(path));
+    const visibleLines=routeLines.filter(Boolean);
+    if(visibleLines.length)map.fitBounds(L.featureGroup(visibleLines).getBounds(),{padding:[42,42],maxZoom:17});
+    if(!path.edges.length)result.textContent='Start and end are the same node. Route distance and adjusted cost: 0 m.';
+    else if(routesAreSame)result.textContent=`A* kept the same route as distance-only shortest: ${formatDistance(path.distance)}; weight-adjusted cost ${formatDistance(path.cost)}. No lower-cost route is connected for ${selected} under the current one-way rules.`;
+    else result.textContent=`Weight-aware A*: ${formatDistance(path.distance)} physical, cost ${formatDistance(path.cost)}. Gray dashed line: distance-only shortest is ${distancePath.error?'unavailable':`${formatDistance(distancePath.distance)} physical (cost ${formatDistance(distancePath.cost)})`}.`;
+    if(!openDirectionPath.error&&!distancePath.error&&openDirectionPath.distance+1>distancePath.distance)result.textContent+=` One-way restrictions exclude a shorter ${formatDistance(openDirectionPath.distance)} path.`;
+    else if(distancePath.error&&!openDirectionPath.error)result.textContent+=' A path exists only if one-way restrictions are ignored.';
     result.hidden=false;
   });
   const search=async()=>{

@@ -158,7 +158,7 @@ function buildStreetGraph(ways, polygon, junctionIds) {
   const nodes = [...nodeIds].map((id) => {
     const point = positions.get(id);
     const names = [...(roadNames.get(id) ?? [])].slice(0, 2);
-    return { id: `osm-node-${id}`, osmId: id, name: names.length ? names.join(' / ') : (membership.get(id)?.size > 1 ? 'Street intersection' : 'Street endpoint'), lat: point.lat, lng: point.lng, source: 'openstreetmap' };
+    return { id: `osm-node-${id}`, osmId: id, name: names.length ? names.join(' / ') : (membership.get(id)?.size > 1 ? 'Street intersection' : 'Street endpoint'), lat: point.lat, lng: point.lng, weight: 0, source: 'openstreetmap' };
   });
   const edges = [];
   const edgeIds = new Set();
@@ -193,6 +193,7 @@ function buildStreetGraph(ways, polygon, junctionIds) {
         to: `osm-node-${toId}`,
         name: String(way.tags?.name || way.tags?.ref || highway).slice(0, 80),
         type: classifyRoadType(highway),
+        weight: 0,
         points,
         oneway: ['yes', '1', '-1'].includes(String(way.tags?.oneway || '').toLowerCase()) || way.tags?.junction === 'roundabout',
         source: 'openstreetmap'

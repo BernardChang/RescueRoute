@@ -33,6 +33,7 @@
   const nodeType=document.getElementById('street-type');
   const customLayers={main:L.layerGroup().addTo(map),moto:L.layerGroup().addTo(map),foot:L.layerGroup().addTo(map)};
   const customMarkers=L.layerGroup().addTo(map);
+  const markersByNodeId=new Map();
   const routeLayer=L.layerGroup().addTo(map);
   const areaSelectionLayer=L.layerGroup().addTo(map);
   const normalizeGraph=(saved)=>({
@@ -64,7 +65,8 @@
   const selectedRouteLabel=()=>{const start=graph.nodes.find((node)=>node.id===routeStartId);const end=graph.nodes.find((node)=>node.id===routeEndId);return `Start: ${start?.name||'not set'} · End: ${end?.name||'not set'}`;};
   function updateRouteSelectionStatus(){document.getElementById('route-selection-status').textContent=`${selectedRouteLabel()}. Hover over a node for 2 seconds to set a route point or edit its weight.`;}
   function saveRouteSelection(){try{localStorage.setItem(routeStorageKey,JSON.stringify({startId:routeStartId,endId:routeEndId}));}catch{}}
-  function setRouteEndpoint(role,node){if(role==='start')routeStartId=node.id;else routeEndId=node.id;saveRouteSelection();routeLayer.clearLayers();document.getElementById('route-result').hidden=true;updateRouteSelectionStatus();renderGraph();map.closePopup();}
+  function updateRouteMarkerStyles(){for(const [id,marker] of markersByNodeId){const icon=marker.getElement()?.querySelector('.custom-node-icon');if(!icon)continue;const isStart=id===routeStartId;icon.classList.toggle('is-route-start',isStart);icon.classList.toggle('is-route-end',id===routeEndId&&!isStart);}}
+  function setRouteEndpoint(role,node){if(role==='start')routeStartId=node.id;else routeEndId=node.id;saveRouteSelection();routeLayer.clearLayers();document.getElementById('route-result').hidden=true;updateRouteSelectionStatus();updateRouteMarkerStyles();map.closePopup();}
   function allowedEdgeTypes(){return selected==='car'?new Set(['main']):selected==='motorcycle'?new Set(['main','moto']):new Set(['main','moto','foot']);}
   function findShortestPath({useWeights=true,respectOneWay=true}={}){
     const start=graph.nodes.find((node)=>node.id===routeStartId);const end=graph.nodes.find((node)=>node.id===routeEndId);
@@ -90,6 +92,7 @@
   function renderGraph(){
     Object.values(customLayers).forEach((layer)=>layer.clearLayers());
     customMarkers.clearLayers();
+    markersByNodeId.clear();
     for(const edge of graph.edges){
       const from=graph.nodes.find((node)=>node.id===edge.from);
       const to=graph.nodes.find((node)=>node.id===edge.to);
@@ -102,6 +105,7 @@
       const routeClass=routeStartId===node.id?' is-route-start':routeEndId===node.id?' is-route-end':'';
       const icon=L.divIcon({className:'',html:`<span class="custom-node-icon${edgeStart===node.id?' is-selected':''}${routeClass}">${safeText(node.name?.slice(0,1)||'•')}</span>`,iconSize:[24,24],iconAnchor:[12,12]});
       const marker=L.marker([node.lat,node.lng],{icon,draggable:true}).addTo(customMarkers);
+      markersByNodeId.set(node.id,marker);
       marker.on('dragend',()=>{const point=marker.getLatLng();node.lat=point.lat;node.lng=point.lng;routeLayer.clearLayers();document.getElementById('route-result').hidden=true;renderGraph();persistGraph();});
       marker.bindPopup(`<div class="street-popup"><strong>${safeText(node.name||'Map node')}</strong><br>${node.lat.toFixed(5)}, ${node.lng.toFixed(5)}<div class="weight-editor"><label>Impediment weight <span><output data-node-weight-value>${weightScore(node)}</output>/10</span><input type="range" data-node-weight min="0" max="10" step="1" value="${weightScore(node)}"></label><small>0 = clear · 10 = heavily impeded</small></div><div class="node-route-actions"><button type="button" data-route-role="start">Set as start</button><button type="button" data-route-role="end">Set as end</button></div><button type="button" data-delete-node="${safeText(node.id)}">Delete node</button></div>`,{autoClose:true,closeOnClick:true,maxWidth:240});
       let hoverTimer=null;const cancelHoverPopup=()=>{clearTimeout(hoverTimer);hoverTimer=null;};

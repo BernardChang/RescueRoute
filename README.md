@@ -1,6 +1,6 @@
 # RescueRoute
 
-RescueRoute is a Manila city access map with Firebase sign-in, a street node and edge editor, community photo reports, and authenticated photo analysis.
+RescueRoute is a Manila city access map with Firebase sign-in, a street node and edge editor, shortest-path routing, AI-assisted street graph creation, community photo reports, and authenticated photo analysis.
 
 ## Stack
 
@@ -8,6 +8,8 @@ RescueRoute is a Manila city access map with Firebase sign-in, a street node and
 - The existing responsive map interface, served as a static frontend from `public/legacy` while its UI is migrated into Next.js components.
 - Leaflet and OpenStreetMap tiles.
 - Firebase Authentication and Cloud Firestore for the shared Manila node-and-edge graph. Existing `connectors` records are still read while they migrate to `edges`.
+- A* routing uses edge geometry and geographic distance, respecting the selected travel mode.
+- Signed-in users can outline a small map area; a Node.js route handler fetches OpenStreetMap roads and asks the server-side OpenAI model to identify connected intersections before adding nodes and edges.
 - Browser IndexedDB for field photos and their analysis results.
 - OpenAI Responses API for photo analysis, called only from the Node.js backend.
 

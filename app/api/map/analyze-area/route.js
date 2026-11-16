@@ -8,7 +8,10 @@ const maxImageBytes = 4 * 1024 * 1024;
 const analysesPerHour = 12;
 const rateWindowMs = 60 * 60 * 1000;
 const analysisTimes = new Map();
-const overpassUrl = 'https://overpass-api.de/api/interpreter';
+const overpassEndpoints = [
+  'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
+  'https://overpass-api.de/api/interpreter'
+];
 
 function jsonError(message, status) {
   return Response.json({ error: message }, { status, headers: { 'Cache-Control': 'no-store' } });
@@ -86,29 +89,43 @@ function validatePolygon(value) {
 
 async function fetchRoads(polygon) {
   const poly = polygon.map(([lng, lat]) => `${lat.toFixed(6)} ${lng.toFixed(6)}`).join(' ');
-  const query = `[out:json][timeout:30];way["highway"](poly:"${poly}");out body geom;`;
-  let response;
-  try {
-    response = await fetch(overpassUrl, {
-      method: 'POST',
-      headers: { Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8', 'User-Agent': 'RescueRoute/1.0 (OpenStreetMap map analysis)' },
-      body: new URLSearchParams({ data: query }),
-      signal: AbortSignal.timeout(40_000)
-    });
-  } catch {
-    throw new Error('OpenStreetMap road data is temporarily unavailable. Try again shortly.');
+  const query = `[out:json][timeout:18];way["highway"](poly:"${poly}");out body geom;`;
+  const failures = [];
+  for (const endpoint of overpassEndpoints) {
+    let response;
+    try {
+      response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8', 'User-Agent': 'RescueRoute/1.0 (OpenStreetMap map analysis)' },
+        body: new URLSearchParams({ data: query }),
+        signal: AbortSignal.timeout(20_000)
+      });
+    } catch (error) {
+      failures.push(`${new URL(endpoint).host}: ${error?.name === 'TimeoutError' ? 'timeout' : 'network error'}`);
+      continue;
+    }
+    if (!response.ok) {
+      failures.push(`${new URL(endpoint).host}: HTTP ${response.status}`);
+      if (response.status >= 400 && response.status < 500 && response.status !== 429) {
+        throw new Error(`OpenStreetMap rejected this selection (HTTP ${response.status}). Try drawing a smaller area.`);
+      }
+      continue;
+    }
+    let data;
+    try {
+      data = await response.json();
+    } catch {
+      failures.push(`${new URL(endpoint).host}: invalid response`);
+      continue;
+    }
+    const ways = (data.elements ?? []).filter((element) => element.type === 'way' && Array.isArray(element.nodes) && Array.isArray(element.geometry));
+    const nodeCount = ways.reduce((sum, way) => sum + way.nodes.length, 0);
+    if (ways.length > maxWays || nodeCount > maxWayNodes) throw new Error('This area has too many streets to analyze at once. Select a smaller area.');
+    return ways;
   }
-  if (!response.ok) throw new Error(response.status === 429 ? 'OpenStreetMap is busy. Try again shortly.' : 'Could not load OpenStreetMap road data for this area.');
-  let data;
-  try {
-    data = await response.json();
-  } catch {
-    throw new Error('OpenStreetMap returned an unreadable result. Try again shortly.');
-  }
-  const ways = (data.elements ?? []).filter((element) => element.type === 'way' && Array.isArray(element.nodes) && Array.isArray(element.geometry));
-  const nodeCount = ways.reduce((sum, way) => sum + way.nodes.length, 0);
-  if (ways.length > maxWays || nodeCount > maxWayNodes) throw new Error('This area has too many streets to analyze at once. Select a smaller area.');
-  return ways;
+  console.error('All OpenStreetMap road-data endpoints failed', failures);
+  if (failures.some((failure) => failure.includes('HTTP 429'))) throw new Error('OpenStreetMap is busy. Try again shortly.');
+  throw new Error('OpenStreetMap road data is temporarily unavailable from its map servers. Please try again shortly.');
 }
 
 function classifyRoadType(highway = '') {

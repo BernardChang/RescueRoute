@@ -52,6 +52,12 @@ async function analyzePhoto(blob, activeUser) {
   if (!assessment || typeof assessment.can_vehicles_pass !== 'boolean' ||
       typeof assessment.obstruction_exists !== 'boolean' || typeof assessment.dead_end !== 'boolean' ||
       !Array.isArray(assessment.obstructing_objects) ||
+      (assessment.can_motorcycles_pass !== undefined && typeof assessment.can_motorcycles_pass !== 'boolean') ||
+      (assessment.can_pedestrians_pass !== undefined && typeof assessment.can_pedestrians_pass !== 'boolean') ||
+      (assessment.stairs_visible !== undefined && typeof assessment.stairs_visible !== 'boolean') ||
+      (assessment.street_stalls_visible !== undefined && typeof assessment.street_stalls_visible !== 'boolean') ||
+      (assessment.parked_vehicles_visible !== undefined && typeof assessment.parked_vehicles_visible !== 'boolean') ||
+      (assessment.low_hanging_wires_visible !== undefined && typeof assessment.low_hanging_wires_visible !== 'boolean') ||
       (assessment.road_visible !== undefined && typeof assessment.road_visible !== 'boolean') ||
       (assessment.recommended_weight !== undefined && (!Number.isInteger(assessment.recommended_weight) || assessment.recommended_weight < 0 || assessment.recommended_weight > 10)) ||
       (assessment.weight_reason !== undefined && typeof assessment.weight_reason !== 'string')) {
@@ -73,9 +79,15 @@ function renderAssessment(container, assessment) {
   const tbody = document.createElement('tbody');
   const rows = [
     ...(typeof assessment.road_visible === 'boolean' ? [['Is a road clearly visible?', assessment.road_visible]] : []),
-    ['Can vehicles pass through?', assessment.can_vehicles_pass],
+    ['Can cars enter?', assessment.can_vehicles_pass],
+    ...(typeof assessment.can_motorcycles_pass === 'boolean' ? [['Can motorcycles pass?', assessment.can_motorcycles_pass]] : []),
+    ...(typeof assessment.can_pedestrians_pass === 'boolean' ? [['Can pedestrians pass?', assessment.can_pedestrians_pass]] : []),
     ['Is a path obstruction visible?', assessment.obstruction_exists],
-    ['Does the alley appear to end here?', assessment.dead_end],
+    ...(typeof assessment.stairs_visible === 'boolean' ? [['Stairs visible?', assessment.stairs_visible]] : []),
+    ...(typeof assessment.street_stalls_visible === 'boolean' ? [['Street stalls visible?', assessment.street_stalls_visible]] : []),
+    ...(typeof assessment.parked_vehicles_visible === 'boolean' ? [['Parked vehicles visible?', assessment.parked_vehicles_visible]] : []),
+    ...(typeof assessment.low_hanging_wires_visible === 'boolean' ? [['Low-hanging wires visible?', assessment.low_hanging_wires_visible]] : []),
+    ['Dead end visible?', assessment.dead_end],
   ];
   rows.forEach(([label, answer]) => {
     const row = document.createElement('tr');
@@ -91,6 +103,7 @@ function renderAssessment(container, assessment) {
   }
   table.append(tbody); container.append(table);
   if (assessment.weight_reason) { const reason = document.createElement('p'); reason.className = 'map-weight-reason'; reason.textContent = assessment.weight_reason; container.append(reason); }
+  if (assessment.access_level) { const access = document.createElement('p'); access.className = 'map-weight-reason'; access.textContent = `Access level: ${assessment.access_level.replaceAll('_', ' ')}.`; container.append(access); }
 
   const objectsHeading = document.createElement('strong');
   objectsHeading.className = 'assessment-objects-title';
@@ -319,7 +332,11 @@ if (form) {
     status(mapWeightStatus, 'Analyzing the road photo…');
     try {
       const assessment = await analyzePhoto(request.file, user);
-      if (!Number.isInteger(assessment.recommended_weight) || typeof assessment.road_visible !== 'boolean' || !assessment.weight_reason) {
+      if (!Number.isInteger(assessment.recommended_weight) || typeof assessment.road_visible !== 'boolean' || !assessment.weight_reason ||
+          typeof assessment.access_level !== 'string' || typeof assessment.can_motorcycles_pass !== 'boolean' ||
+          typeof assessment.can_pedestrians_pass !== 'boolean' || typeof assessment.stairs_visible !== 'boolean' ||
+          typeof assessment.street_stalls_visible !== 'boolean' || typeof assessment.parked_vehicles_visible !== 'boolean' ||
+          typeof assessment.low_hanging_wires_visible !== 'boolean') {
         throw new Error('The photo analysis did not include a road visibility result and suggested weight. Please retry.');
       }
       renderAssessment(mapWeightAssessment, assessment);
@@ -333,8 +350,28 @@ if (form) {
       mapWeightApply.onclick = async () => {
         mapWeightApply.disabled = true; mapWeightApply.textContent = 'Saving to Firebase…';
         try {
-          const savedWeight = await window.rescueRouteApplyMapWeight({ targetType: request.targetType, targetId: request.targetId, weight: assessment.recommended_weight });
-          status(mapWeightStatus, `Saved ${request.targetType} weight ${savedWeight}/10 to the shared map.`);
+          const savedWeight = await window.rescueRouteApplyMapWeight({
+            targetType: request.targetType,
+            targetId: request.targetId,
+            weight: assessment.recommended_weight,
+            photoAccess: {
+              accessLevel: assessment.access_level,
+              canVehiclesPass: assessment.can_vehicles_pass,
+              canMotorcyclesPass: assessment.can_motorcycles_pass,
+              canPedestriansPass: assessment.can_pedestrians_pass,
+              hazards: {
+                stairs: assessment.stairs_visible,
+                stalls: assessment.street_stalls_visible,
+                parkedVehicles: assessment.parked_vehicles_visible,
+                lowHangingWires: assessment.low_hanging_wires_visible,
+                deadEnd: assessment.dead_end,
+                objects: assessment.obstructing_objects,
+              },
+              weightReason: assessment.weight_reason,
+              assessedAt: new Date().toISOString(),
+            },
+          });
+          status(mapWeightStatus, `Saved ${request.targetType} weight ${savedWeight}/10 and ${assessment.access_level.replaceAll('_', ' ')} access to the shared map. Routes now use this access assessment.`);
           mapWeightApply.textContent = 'Weight saved';
         } catch (error) {
           status(mapWeightStatus, error?.message || 'Firebase save failed. Return to the map and check its sync status.', true);

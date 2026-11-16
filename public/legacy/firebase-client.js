@@ -1,6 +1,6 @@
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-app.js';
 import { getAuth } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-auth.js';
-import { getFirestore, doc, onSnapshot, setDoc } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js';
+import { getFirestore, collection, doc, getDocs, onSnapshot, writeBatch } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js';
 
 export {
   createUserWithEmailAndPassword,
@@ -21,5 +21,5 @@ if (!configResponse.ok) throw new Error('Firebase is not configured on this webs
 const firebaseConfig = await configResponse.json();
 export const auth = getAuth(initializeApp(firebaseConfig));
 export const db = getFirestore(auth.app);
-export { doc, onSnapshot, setDoc };
+export { collection, doc, getDocs, onSnapshot, writeBatch };
 auth.useDeviceLanguage();

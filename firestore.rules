@@ -28,25 +28,52 @@ service cloud.firestore {
       }
 
       function validStreetMap() {
-        return ((
-          request.resource.data.keys().hasOnly(['nodes', 'edges', 'updatedAt'])
-          && request.resource.data.keys().hasAll(['nodes', 'edges', 'updatedAt'])
-          && request.resource.data.edges is list
-          && request.resource.data.edges.size() <= 4000
-        ) || (
-          request.resource.data.keys().hasOnly(['nodes', 'connectors', 'updatedAt'])
-          && request.resource.data.keys().hasAll(['nodes', 'connectors', 'updatedAt'])
-          && request.resource.data.connectors is list
-          && request.resource.data.connectors.size() <= 4000
-        ))
-          && request.resource.data.nodes is list
-          && request.resource.data.nodes.size() <= 2000
-          && request.resource.data.updatedAt is number;
+        return
+          (
+            (
+              request.resource.data.keys().hasOnly(['nodes', 'edges', 'updatedAt'])
+              && request.resource.data.keys().hasAll(['nodes', 'edges', 'updatedAt'])
+              && request.resource.data.nodes is list
+              && request.resource.data.nodes.size() <= 2000
+              && request.resource.data.edges is list
+              && request.resource.data.edges.size() <= 4000
+            ) || (
+              request.resource.data.keys().hasOnly(['nodes', 'connectors', 'updatedAt'])
+              && request.resource.data.keys().hasAll(['nodes', 'connectors', 'updatedAt'])
+              && request.resource.data.nodes is list
+              && request.resource.data.nodes.size() <= 2000
+              && request.resource.data.connectors is list
+              && request.resource.data.connectors.size() <= 4000
+            )
+          ) && request.resource.data.updatedAt is number
+        || (
+          request.resource.data.keys().hasOnly(['format', 'nodeChunks', 'edgeChunks', 'updatedAt'])
+          && request.resource.data.keys().hasAll(['format', 'nodeChunks', 'edgeChunks', 'updatedAt'])
+          && request.resource.data.format == 'chunked-v1'
+          && request.resource.data.nodeChunks is int
+          && request.resource.data.nodeChunks >= 0
+          && request.resource.data.nodeChunks <= 200
+          && request.resource.data.edgeChunks is int
+          && request.resource.data.edgeChunks >= 0
+          && request.resource.data.edgeChunks <= 200
+          && request.resource.data.updatedAt is number
+        );
       }
 
       // The city street graph is public map data; only signed-in users may publish edits.
-      allow get: if true;
+      allow read: if true;
       allow create, update: if signedIn() && validStreetMap();
+
+      match /chunks/{chunkId} {
+        allow read: if true;
+        allow create, update: if signedIn()
+          && request.resource.data.keys().hasOnly(['kind', 'items'])
+          && request.resource.data.keys().hasAll(['kind', 'items'])
+          && request.resource.data.kind in ['nodes', 'edges']
+          && request.resource.data.items is list
+          && request.resource.data.items.size() <= 2000;
+        allow delete: if signedIn();
+      }
     }
   }
 }

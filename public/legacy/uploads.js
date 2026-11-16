@@ -51,7 +51,10 @@ async function analyzePhoto(blob, activeUser) {
   const assessment = result.analysis;
   if (!assessment || typeof assessment.can_vehicles_pass !== 'boolean' ||
       typeof assessment.obstruction_exists !== 'boolean' || typeof assessment.dead_end !== 'boolean' ||
-      !Array.isArray(assessment.obstructing_objects)) {
+      !Array.isArray(assessment.obstructing_objects) ||
+      (assessment.road_visible !== undefined && typeof assessment.road_visible !== 'boolean') ||
+      (assessment.recommended_weight !== undefined && (!Number.isInteger(assessment.recommended_weight) || assessment.recommended_weight < 0 || assessment.recommended_weight > 10)) ||
+      (assessment.weight_reason !== undefined && typeof assessment.weight_reason !== 'string')) {
     throw new Error('The photo assessment returned an invalid result. Please retry.');
   }
   return assessment;
@@ -69,6 +72,7 @@ function renderAssessment(container, assessment) {
   const table = document.createElement('table'); table.className = 'assessment-table';
   const tbody = document.createElement('tbody');
   const rows = [
+    ...(typeof assessment.road_visible === 'boolean' ? [['Is a road clearly visible?', assessment.road_visible]] : []),
     ['Can vehicles pass through?', assessment.can_vehicles_pass],
     ['Is a path obstruction visible?', assessment.obstruction_exists],
     ['Does the alley appear to end here?', assessment.dead_end],
@@ -79,7 +83,14 @@ function renderAssessment(container, assessment) {
     const value = document.createElement('td'); value.textContent = answer ? 'True' : 'False';
     row.append(heading, value); tbody.append(row);
   });
+  if (Number.isInteger(assessment.recommended_weight)) {
+    const row = document.createElement('tr');
+    const heading = document.createElement('th'); heading.scope = 'row'; heading.textContent = 'Suggested map weight';
+    const value = document.createElement('td'); value.textContent = `${assessment.recommended_weight}/10`;
+    row.append(heading, value); tbody.append(row);
+  }
   table.append(tbody); container.append(table);
+  if (assessment.weight_reason) { const reason = document.createElement('p'); reason.className = 'map-weight-reason'; reason.textContent = assessment.weight_reason; container.append(reason); }
 
   const objectsHeading = document.createElement('strong');
   objectsHeading.className = 'assessment-objects-title';
@@ -118,11 +129,18 @@ if (form) {
   const adminGallery = $('admin-gallery');
   const locked = $('gallery-locked');
   const gallery = $('photo-gallery');
+  const mapWeightFlow = $('map-weight-flow');
+  const mapWeightPreview = $('map-weight-preview');
+  const mapWeightStatus = $('map-weight-status');
+  const mapWeightAssessment = $('map-weight-assessment');
+  const mapWeightApply = $('map-weight-apply');
   const adminEmail = photoAdminEmail.trim().toLowerCase();
   let user = null;
   let selected = [];
   let busy = false;
   let galleryUrls = [];
+  let mapWeightRequest = null;
+  let mapWeightPreviewUrl = '';
 
   function status(element, text, error = false) {
     element.textContent = text;
@@ -288,8 +306,48 @@ if (form) {
       status($('gallery-status'), 'Local photo storage could not be opened. Check browser storage settings and refresh.', true);
     } finally { refresh.disabled = false; }
   }
+  window.addEventListener('rescue:map-weight-photo', async (event) => {
+    const request = event.detail;
+    if (!request?.file || !['node', 'edge'].includes(request.targetType)) return;
+    mapWeightRequest = request;
+    mapWeightFlow.hidden = false; form.hidden = true; adminGallery.hidden = true; locked.hidden = true;
+    mapWeightAssessment.replaceChildren(); mapWeightApply.disabled = true;
+    $('map-weight-target').textContent = `Selected ${request.targetType}: ${request.targetName}. Review the AI assessment, then apply its suggested weight.`;
+    if (mapWeightPreviewUrl) URL.revokeObjectURL(mapWeightPreviewUrl);
+    mapWeightPreviewUrl = URL.createObjectURL(request.file); mapWeightPreview.src = mapWeightPreviewUrl; mapWeightPreview.hidden = false;
+    if (!user) { status(mapWeightStatus, 'Sign in before analyzing a photo and saving a map weight.', true); return; }
+    status(mapWeightStatus, 'Analyzing the road photo…');
+    try {
+      const assessment = await analyzePhoto(request.file, user);
+      if (!Number.isInteger(assessment.recommended_weight) || typeof assessment.road_visible !== 'boolean' || !assessment.weight_reason) {
+        throw new Error('The photo analysis did not include a road visibility result and suggested weight. Please retry.');
+      }
+      renderAssessment(mapWeightAssessment, assessment);
+      if (!assessment.road_visible) {
+        status(mapWeightStatus, 'The photo does not clearly show a road. The current weight was left unchanged.', true);
+        return;
+      }
+      status(mapWeightStatus, `AI suggests ${assessment.recommended_weight}/10. Review the assessment before applying it.`);
+      mapWeightApply.textContent = `Apply weight ${assessment.recommended_weight}/10 to ${request.targetType}`;
+      mapWeightApply.disabled = false;
+      mapWeightApply.onclick = async () => {
+        mapWeightApply.disabled = true; mapWeightApply.textContent = 'Saving to Firebase…';
+        try {
+          const savedWeight = await window.rescueRouteApplyMapWeight({ targetType: request.targetType, targetId: request.targetId, weight: assessment.recommended_weight });
+          status(mapWeightStatus, `Saved ${request.targetType} weight ${savedWeight}/10 to the shared map.`);
+          mapWeightApply.textContent = 'Weight saved';
+        } catch (error) {
+          status(mapWeightStatus, error?.message || 'Firebase save failed. Return to the map and check its sync status.', true);
+          mapWeightApply.disabled = false; mapWeightApply.textContent = `Retry saving weight ${assessment.recommended_weight}/10`;
+        }
+      };
+    } catch (error) {
+      status(mapWeightStatus, error?.message || 'The road photo could not be analyzed. Please retry.', true);
+    }
+  });
+  $('map-weight-return').addEventListener('click', () => { location.hash = '#map'; });
   $('gallery-refresh').addEventListener('click', loadGallery);
-  window.addEventListener('rescue:uploads', updateAccess);
+  window.addEventListener('rescue:uploads', () => { mapWeightFlow.hidden = true; form.hidden = false; if (mapWeightPreviewUrl) URL.revokeObjectURL(mapWeightPreviewUrl); mapWeightPreviewUrl = ''; updateAccess(); });
   import('./firebase-client.js').then(async (module) => {
     await module.auth.authStateReady();
     module.onAuthStateChanged(module.auth, (nextUser) => { user = nextUser; updateAccess(); });

@@ -27,6 +27,14 @@
   </section>
   <main class="uploads-page" id="uploads-page" hidden>
     <div class="uploads-heading"><span class="rescue-kicker"><i></i> COMMUNITY FIELD REPORTS</span><h1>Share what you see.</h1><p>Upload a photo of a blocked road, damaged route, or access point to help the team understand conditions on the ground.</p></div>
+    <section class="map-weight-flow uploads-card" id="map-weight-flow" aria-labelledby="map-weight-title" hidden>
+      <div class="upload-card-heading"><div><span class="panel-eyebrow">MAP WEIGHT REVIEW</span><h2 id="map-weight-title">Set weight from a photo</h2></div><span class="upload-lock">AI ASSESSMENT</span></div>
+      <p class="upload-signin-note" id="map-weight-target"></p>
+      <img id="map-weight-preview" class="map-weight-preview" alt="Road photo being assessed" hidden>
+      <p id="map-weight-status" class="upload-status" role="status" aria-live="polite">Analyzing the road photo…</p>
+      <div id="map-weight-assessment" class="map-weight-assessment"></div>
+      <div class="map-weight-actions"><button class="route-button" id="map-weight-apply" type="button" disabled>Apply suggested weight</button><button class="text-button" id="map-weight-return" type="button">Return to map</button></div>
+    </section>
     <section class="uploads-card" aria-labelledby="upload-title">
       <div class="upload-card-heading"><div><span class="panel-eyebrow">FIELD PHOTO</span><h2 id="upload-title">Add a photo</h2></div><span class="upload-lock" aria-label="Uploads are private to the admin team">⌑ ADMIN ARCHIVE</span></div>
       <p class="upload-signin-note" id="upload-auth-note">Sign in to submit a photo. Photos are saved on this device for the admin team.</p>

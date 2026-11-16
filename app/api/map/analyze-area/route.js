@@ -1,5 +1,5 @@
 export const runtime = 'nodejs';
-export const maxDuration = 120;
+export const maxDuration = 240;
 
 const maxPoints = 20;
 const maxWays = 500;
@@ -10,6 +10,7 @@ const rateWindowMs = 60 * 60 * 1000;
 const analysisTimes = new Map();
 const overpassEndpoints = [
   'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
+  'https://overpass.private.coffee/api/interpreter',
   'https://overpass-api.de/api/interpreter'
 ];
 
@@ -89,7 +90,7 @@ function validatePolygon(value) {
 
 async function fetchRoads(polygon) {
   const poly = polygon.map(([lng, lat]) => `${lat.toFixed(6)} ${lng.toFixed(6)}`).join(' ');
-  const query = `[out:json][timeout:18];way["highway"](poly:"${poly}");out body geom;`;
+  const query = `[out:json][timeout:45];way["highway"](poly:"${poly}");out body geom;`;
   const failures = [];
   for (const endpoint of overpassEndpoints) {
     let response;
@@ -98,7 +99,7 @@ async function fetchRoads(polygon) {
         method: 'POST',
         headers: { Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8', 'User-Agent': 'RescueRoute/1.0 (OpenStreetMap map analysis)' },
         body: new URLSearchParams({ data: query }),
-        signal: AbortSignal.timeout(20_000)
+        signal: AbortSignal.timeout(50_000)
       });
     } catch (error) {
       failures.push(`${new URL(endpoint).host}: ${error?.name === 'TimeoutError' ? 'timeout' : 'network error'}`);
@@ -106,7 +107,7 @@ async function fetchRoads(polygon) {
     }
     if (!response.ok) {
       failures.push(`${new URL(endpoint).host}: HTTP ${response.status}`);
-      if (response.status >= 400 && response.status < 500 && response.status !== 429) {
+      if (response.status >= 400 && response.status < 500 && ![406, 408, 413, 425, 429].includes(response.status)) {
         throw new Error(`OpenStreetMap rejected this selection (HTTP ${response.status}). Try drawing a smaller area.`);
       }
       continue;
@@ -125,7 +126,7 @@ async function fetchRoads(polygon) {
   }
   console.error('All OpenStreetMap road-data endpoints failed', failures);
   if (failures.some((failure) => failure.includes('HTTP 429'))) throw new Error('OpenStreetMap is busy. Try again shortly.');
-  throw new Error('OpenStreetMap road data is temporarily unavailable from its map servers. Please try again shortly.');
+  throw new Error('OpenStreetMap road data timed out or its map servers are busy. Try drawing a smaller area, then try again.');
 }
 
 function classifyRoadType(highway = '') {

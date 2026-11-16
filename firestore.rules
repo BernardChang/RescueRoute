@@ -44,7 +44,8 @@ service cloud.firestore {
           && request.resource.data.updatedAt is number;
       }
 
-      allow get: if signedIn();
+      // The city street graph is public map data; only signed-in users may publish edits.
+      allow get: if true;
       allow create, update: if signedIn() && validStreetMap();
     }
   }

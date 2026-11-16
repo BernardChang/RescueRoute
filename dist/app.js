@@ -88,6 +88,12 @@
     if (location.hash !== '#' + mode) history.pushState(null, '', '#' + mode);
   }
   function renderUser(user) {
+    const accountButtonLabel = user?.displayName?.trim() || user?.email?.split('@')[0] || 'Account';
+    document.querySelectorAll('[data-account-link]').forEach((button) => {
+      button.textContent = user ? accountButtonLabel : 'Sign in';
+      button.title = user?.email || '';
+      button.setAttribute('aria-label', user ? `Account: ${accountButtonLabel}` : 'Sign in');
+    });
     $('auth-view').hidden = !!user;
     $('account-view').hidden = !user;
     document.body.classList.toggle('signed-in', !!user);

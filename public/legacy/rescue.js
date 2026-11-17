@@ -11,9 +11,10 @@
     document.getElementById('city-map').innerHTML = '<div class="map-offline">The map tile source is not configured. Check the site setup and refresh.</div>';
     return;
   }
-  L.tileLayer(tileUrl, {
+  const tileLayer = L.tileLayer(tileUrl, {
     maxZoom: 19,
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+    crossOrigin: 'anonymous',
     referrerPolicy: 'strict-origin-when-cross-origin',
     updateWhenIdle: true,
     keepBuffer: 1
@@ -161,6 +162,38 @@
     for(const [type,layer] of Object.entries(customLayers)){const input=document.querySelector(`[data-layer="${type}"]`);if(input?.checked)layer.addTo(map);}
   }
   function clearAreaSelection(){areaPoints=[];areaSelectionLayer.clearLayers();document.getElementById('analyze-map-area').disabled=true;document.getElementById('cancel-map-area').hidden=true;map.doubleClickZoom.enable();}
+  async function captureSelectedMapArea(){
+    const points=areaPoints.map((point)=>map.latLngToContainerPoint(point));
+    const mapSize=map.getSize();
+    let left=Math.max(0,Math.floor(Math.min(...points.map((point)=>point.x))));
+    let top=Math.max(0,Math.floor(Math.min(...points.map((point)=>point.y))));
+    let right=Math.min(mapSize.x,Math.ceil(Math.max(...points.map((point)=>point.x))));
+    let bottom=Math.min(mapSize.y,Math.ceil(Math.max(...points.map((point)=>point.y))));
+    const expand=(start,end,limit)=>{let a=start,b=end;if(b-a<220){const center=(a+b)/2;a=Math.max(0,Math.floor(center-110));b=Math.min(limit,a+220);a=Math.max(0,b-220);}return [a,b];};
+    [left,right]=expand(left,right,mapSize.x);[top,bottom]=expand(top,bottom,mapSize.y);
+    const width=right-left,height=bottom-top;
+    if(width<48||height<48)throw new Error('The map view is too small to capture a readable fallback image. Zoom in and retry.');
+    const maxDimension=760,scale=Math.min(1,maxDimension/Math.max(width,height));
+    const canvas=document.createElement('canvas');canvas.width=Math.max(1,Math.round(width*scale));canvas.height=Math.max(1,Math.round(height*scale));
+    const context=canvas.getContext('2d');if(!context)throw new Error('The map image could not be prepared for AI analysis.');
+    context.fillStyle='#fff';context.fillRect(0,0,canvas.width,canvas.height);
+    const mapRect=map.getContainer().getBoundingClientRect();
+    for(const image of tileLayer.getContainer().querySelectorAll('img.leaflet-tile-loaded')){
+      if(!image.complete||!image.naturalWidth)continue;
+      const rect=image.getBoundingClientRect();
+      const x=rect.left-mapRect.left-left,y=rect.top-mapRect.top-top;
+      if(x>=width||y>=height||x+rect.width<=0||y+rect.height<=0)continue;
+      context.drawImage(image,x*scale,y*scale,rect.width*scale,rect.height*scale);
+    }
+    let blob;
+    for(const quality of [.72,.56,.4]){
+      blob=await new Promise((resolve,reject)=>canvas.toBlob((value)=>value?resolve(value):reject(new Error('The selected map image could not be encoded.')),'image/jpeg',quality));
+      if(blob.size<=256*1024)break;
+    }
+    if(blob.size>256*1024)throw new Error('The selected map image is too detailed. Zoom in and select the area again.');
+    const northWest=map.containerPointToLatLng([left,top]),southEast=map.containerPointToLatLng([right,bottom]);
+    return {blob,bounds:{north:northWest.lat,south:southEast.lat,west:northWest.lng,east:southEast.lng}};
+  }
   screenshotInput.addEventListener('change',()=>{mapScreenshot=screenshotInput.files?.[0]||null;document.getElementById('map-screenshot-name').textContent=mapScreenshot?mapScreenshot.name:'Optional screenshot';if(mapScreenshot&&mapScreenshot.size>4*1024*1024){mapScreenshot=null;screenshotInput.value='';document.getElementById('map-screenshot-name').textContent='Optional screenshot';editorStatus.textContent='Choose a screenshot smaller than 4 MB.';}});
   function paintAreaSelection(){areaSelectionLayer.clearLayers();if(!areaPoints.length)return;if(areaPoints.length===1)L.circleMarker(areaPoints[0],{radius:6,color:'#2865d7',fillColor:'#fff',fillOpacity:1,weight:3}).addTo(areaSelectionLayer);else if(areaPoints.length===2)L.polyline(areaPoints,{color:'#2865d7',weight:3,dashArray:'7 5'}).addTo(areaSelectionLayer);else L.polygon(areaPoints,{color:'#2865d7',weight:3,dashArray:'7 5',fillColor:'#5890eb',fillOpacity:.12}).addTo(areaSelectionLayer);for(const point of areaPoints)L.circleMarker(point,{radius:4,color:'#2865d7',fillColor:'#fff',fillOpacity:1,weight:2}).addTo(areaSelectionLayer);}
   function addAreaPoint(point){if(areaPoints.length>=20){editorStatus.textContent='Area boundary reached its 20-corner limit. Analyze this area or cancel it.';return;}areaPoints.push(point);paintAreaSelection();updateModeButtons();editorStatus.textContent=`Area outline: ${areaPoints.length} ${areaPoints.length===1?'corner':'corners'}. Add corners, then analyze with AI.`;}
@@ -169,7 +202,27 @@
   document.getElementById('cancel-map-area').addEventListener('click',()=>{if(areaBusy)return;editMode='';clearAreaSelection();updateModeButtons();editorStatus.textContent='Area selection cancelled.';});
   document.getElementById('stop-street-edit').addEventListener('click',()=>{if(areaBusy)return;editMode='';edgeStart=null;clearAreaSelection();updateModeButtons();editorStatus.textContent='Editor ready. Hover a node to set route endpoints.';renderGraph();});
   map.on('click',(event)=>{if(areaBusy)return;if(editMode==='area'){addAreaPoint(event.latlng);return;}if(editMode!=='add')return;graph.nodes.push({id:crypto.randomUUID(),name:nodeName.value.trim()||`Node ${graph.nodes.length+1}`,lat:event.latlng.lat,lng:event.latlng.lng,weight:0});editMode='';routeLayer.clearLayers();document.getElementById('route-result').hidden=true;updateModeButtons();renderGraph();persistGraph();});
-  document.getElementById('analyze-map-area').addEventListener('click',async()=>{if(areaBusy||areaPoints.length<3)return;const user=cloudClient?.auth.currentUser;if(!user){editorStatus.textContent='Sign in before asking AI to analyze a map area.';return;}areaBusy=true;updateModeButtons();editorStatus.textContent=mapScreenshot?'Matching the screenshot to OpenStreetMap paths and building connected nodes and edges…':'Loading OpenStreetMap paths and asking AI to identify their intersections…';try{const token=await user.getIdToken();const form=new FormData();form.append('polygon',JSON.stringify(areaPoints.map((point)=>[point.lat,point.lng])));if(mapScreenshot)form.append('image',mapScreenshot);const response=await fetch('/api/map/analyze-area',{method:'POST',headers:{Authorization:`Bearer ${token}`},body:form});const result=await response.json().catch(()=>({}));if(!response.ok)throw new Error(result.error||'AI map analysis could not complete.');const knownNodes=new Set(graph.nodes.map((node)=>node.id));const knownEdges=new Set(graph.edges.map((edge)=>edge.id));const newNodes=(result.nodes||[]).filter((node)=>!knownNodes.has(node.id));const newEdges=(result.edges||[]).filter((edge)=>!knownEdges.has(edge.id));if(graph.nodes.length+newNodes.length>2000||graph.edges.length+newEdges.length>4000)throw new Error('This graph is near its save limit. Select a smaller area or clear unused nodes and edges.');graph.nodes.push(...newNodes);graph.edges.push(...newEdges);editMode='';clearAreaSelection();routeLayer.clearLayers();document.getElementById('route-result').hidden=true;updateModeButtons();renderGraph();persistGraph();editorStatus.textContent=`${result.summary||'AI street analysis complete.'} Added ${newNodes.length} new nodes and ${newEdges.length} new edges.`;}catch(error){editorStatus.textContent=error.message||'AI map analysis failed. Please retry.';}finally{areaBusy=false;updateModeButtons();}});
+  document.getElementById('analyze-map-area').addEventListener('click',async()=>{
+    if(areaBusy||areaPoints.length<3)return;
+    const user=cloudClient?.auth.currentUser;
+    if(!user){editorStatus.textContent='Sign in before asking AI to analyze a map area.';return;}
+    areaBusy=true;updateModeButtons();editorStatus.textContent='Preparing the selected map and checking OpenStreetMap road data…';
+    try{
+      const token=await user.getIdToken();const form=new FormData();
+      form.append('polygon',JSON.stringify(areaPoints.map((point)=>[point.lat,point.lng])));
+      if(mapScreenshot)form.append('image',mapScreenshot);
+      try{const captured=await captureSelectedMapArea();form.append('mapPreview',captured.blob,'selected-map-area.jpg');form.append('mapPreviewBounds',JSON.stringify(captured.bounds));}
+      catch(error){console.warn('Could not capture the selected map preview; road-data analysis will continue.',error);}
+      const response=await fetch('/api/map/analyze-area',{method:'POST',headers:{Authorization:`Bearer ${token}`},body:form});
+      const result=await response.json().catch(()=>({}));if(!response.ok)throw new Error(result.error||'AI map analysis could not complete.');
+      const knownNodes=new Set(graph.nodes.map((node)=>node.id));const knownEdges=new Set(graph.edges.map((edge)=>edge.id));
+      const newNodes=(result.nodes||[]).filter((node)=>!knownNodes.has(node.id));const newEdges=(result.edges||[]).filter((edge)=>!knownEdges.has(edge.id));
+      if(graph.nodes.length+newNodes.length>2000||graph.edges.length+newEdges.length>4000)throw new Error('This graph is near its save limit. Select a smaller area or clear unused nodes and edges.');
+      graph.nodes.push(...newNodes);graph.edges.push(...newEdges);editMode='';clearAreaSelection();routeLayer.clearLayers();document.getElementById('route-result').hidden=true;updateModeButtons();renderGraph();persistGraph();
+      editorStatus.textContent=`${result.summary||'AI street analysis complete.'} Added ${newNodes.length} new nodes and ${newEdges.length} new edges.`;
+    }catch(error){editorStatus.textContent=error.message||'AI map analysis failed. Please retry.';}
+    finally{areaBusy=false;updateModeButtons();}
+  });
   document.getElementById('clear-street-map').addEventListener('click',()=>{if(!graph.nodes.length&&!graph.edges.length){editorStatus.textContent='There are no custom nodes or edges to clear.';return;}if(!window.confirm('Delete all nodes and edges saved in this browser?'))return;graph={nodes:[],edges:[]};routeStartId=null;routeEndId=null;saveRouteSelection();routeLayer.clearLayers();renderGraph();persistGraph();updateRouteSelectionStatus();});
   for (const [key,road] of Object.entries(samples)) {
     const style={color:colors[key],weight:key==='main'?6:5,opacity:.94,lineCap:'round',lineJoin:'round',dashArray:key==='moto'?'10 8':key==='foot'?'2 9':null};

@@ -2,8 +2,8 @@ export const runtime = 'nodejs';
 export const maxDuration = 240;
 
 const maxPoints = 20;
-const maxWays = 500;
-const maxWayNodes = 12_000;
+const maxWaysPerQuery = 400;
+const maxWayNodesPerQuery = 8_000;
 const maxLegacyMultipartBytes = 4_500_000;
 const analysesPerHour = 12;
 const rateWindowMs = 60 * 60 * 1000;
@@ -72,63 +72,87 @@ function validatePolygon(value) {
   });
   if (polygon.some((point) => !point)) return null;
 
-  const lats = polygon.map((point) => point[1]);
-  const lngs = polygon.map((point) => point[0]);
-  const midLat = (Math.min(...lats) + Math.max(...lats)) / 2;
-  const widthMeters = (Math.max(...lngs) - Math.min(...lngs)) * 111_320 * Math.cos(midLat * Math.PI / 180);
-  const heightMeters = (Math.max(...lats) - Math.min(...lats)) * 111_320;
   let twiceArea = 0;
   for (let i = 0; i < polygon.length; i++) {
     const [x1, y1] = polygon[i];
     const [x2, y2] = polygon[(i + 1) % polygon.length];
     twiceArea += x1 * y2 - x2 * y1;
   }
-  const areaMeters = Math.abs(twiceArea / 2) * 111_320 * 111_320 * Math.cos(midLat * Math.PI / 180);
-  if (widthMeters > 3_000 || heightMeters > 3_000 || areaMeters > 6_000_000) return null;
+  if (Math.abs(twiceArea) < 1e-12) return null;
   return polygon;
 }
 
 async function fetchRoads(polygon) {
   const south=Math.min(...polygon.map((point)=>point[1])),north=Math.max(...polygon.map((point)=>point[1]));
   const west=Math.min(...polygon.map((point)=>point[0])),east=Math.max(...polygon.map((point)=>point[0]));
-  const query = `[out:json][timeout:18];way["highway"](${south.toFixed(6)},${west.toFixed(6)},${north.toFixed(6)},${east.toFixed(6)});out body geom;`;
-  const failures = [];
-  for (const endpoint of overpassEndpoints) {
-    let response;
-    try {
-      response = await fetch(endpoint, {
-        method: 'POST',
-        headers: { Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8', 'User-Agent': 'RescueRoute/1.0 (OpenStreetMap map analysis)' },
-        body: new URLSearchParams({ data: query }),
-        signal: AbortSignal.timeout(20_000)
-      });
-    } catch (error) {
-      failures.push(`${new URL(endpoint).host}: ${error?.name === 'TimeoutError' ? 'timeout' : 'network error'}`);
-      continue;
-    }
-    if (!response.ok) {
-      failures.push(`${new URL(endpoint).host}: HTTP ${response.status}`);
-      if (response.status >= 400 && response.status < 500 && ![406, 408, 413, 425, 429].includes(response.status)) {
-        throw new Error(`OpenStreetMap rejected this selection (HTTP ${response.status}). Try drawing a smaller area.`);
+  const attempts = { count: 0 };
+  const maximumSubdivisionDepth = 7;
+  const minimumTileSpan = 0.00025;
+
+  async function fetchTile(bounds, depth = 0) {
+    const [tileSouth, tileWest, tileNorth, tileEast] = bounds;
+    attempts.count++;
+    if (attempts.count > 20_000) throw new Error('This map selection needs too many street-data requests. Split it into a few adjacent selections and retry.');
+    const query = `[out:json][timeout:18];way["highway"](${tileSouth.toFixed(6)},${tileWest.toFixed(6)},${tileNorth.toFixed(6)},${tileEast.toFixed(6)});out body geom;`;
+    const failures = [];
+    let ways = null;
+    for (const endpoint of overpassEndpoints) {
+      let response;
+      try {
+        response = await fetch(endpoint, {
+          method: 'POST',
+          headers: { Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8', 'User-Agent': 'RescueRoute/1.0 (OpenStreetMap map analysis)' },
+          body: new URLSearchParams({ data: query }),
+          signal: AbortSignal.timeout(20_000)
+        });
+      } catch (error) {
+        failures.push(`${new URL(endpoint).host}: ${error?.name === 'TimeoutError' ? 'timeout' : 'network error'}`);
+        continue;
       }
-      continue;
+      if (!response.ok) {
+        failures.push(`${new URL(endpoint).host}: HTTP ${response.status}`);
+        if (response.status >= 400 && response.status < 500 && ![406, 408, 413, 425, 429].includes(response.status)) {
+          throw new Error(`OpenStreetMap rejected this selection (HTTP ${response.status}).`);
+        }
+        continue;
+      }
+      let data;
+      try { data = await response.json(); }
+      catch { failures.push(`${new URL(endpoint).host}: invalid response`); continue; }
+      if (data.remark) { failures.push(`${new URL(endpoint).host}: ${String(data.remark).slice(0, 120)}`); continue; }
+      ways = (data.elements ?? []).filter((element) => element.type === 'way' && Array.isArray(element.nodes) && Array.isArray(element.geometry));
+      break;
     }
-    let data;
-    try {
-      data = await response.json();
-    } catch {
-      failures.push(`${new URL(endpoint).host}: invalid response`);
-      continue;
+
+    const tooDense = ways && (ways.length > maxWaysPerQuery || ways.reduce((sum, way) => sum + way.nodes.length, 0) > maxWayNodesPerQuery);
+    const canSplit = depth < maximumSubdivisionDepth && tileNorth - tileSouth > minimumTileSpan && tileEast - tileWest > minimumTileSpan;
+    if (ways && !tooDense) return ways;
+
+    // Dense city blocks can exceed Overpass's comfortable response size even
+    // for a modest selection. Subdivide the query and merge by OSM way ID.
+    // Also subdivide an overloaded query so its smaller children can succeed.
+    if (canSplit && (tooDense || !ways)) {
+      const midLat = (tileSouth + tileNorth) / 2;
+      const midLng = (tileWest + tileEast) / 2;
+      const children = [
+        [tileSouth, tileWest, midLat, midLng], [tileSouth, midLng, midLat, tileEast],
+        [midLat, tileWest, tileNorth, midLng], [midLat, midLng, tileNorth, tileEast]
+      ];
+      const merged = new Map();
+      for (const child of children) {
+        for (const way of await fetchTile(child, depth + 1)) merged.set(String(way.id), way);
+      }
+      return [...merged.values()];
     }
-    if(data.remark){failures.push(`${new URL(endpoint).host}: ${String(data.remark).slice(0,120)}`);continue;}
-    const ways = (data.elements ?? []).filter((element) => element.type === 'way' && Array.isArray(element.nodes) && Array.isArray(element.geometry));
-    const nodeCount = ways.reduce((sum, way) => sum + way.nodes.length, 0);
-    if (ways.length > maxWays || nodeCount > maxWayNodes) throw new Error('This area has too many streets to analyze at once. Select a smaller area.');
-    return ways;
+    if (ways) return ways;
+
+    console.error('OpenStreetMap road-data tile failed', bounds, failures);
+    if (failures.some((failure) => failure.includes('HTTP 429'))) throw new Error('OpenStreetMap is busy. Try again shortly.');
+    throw new Error(`OpenStreetMap road servers did not return data (${failures.join('; ')}).`);
   }
-  console.error('All OpenStreetMap road-data endpoints failed', failures);
-  if (failures.some((failure) => failure.includes('HTTP 429'))) throw new Error('OpenStreetMap is busy. Try again shortly.');
-  throw new Error(`OpenStreetMap road servers did not return data (${failures.join('; ')}).`);
+
+  const ways = await fetchTile([south, west, north, east]);
+  return [...new Map(ways.map((way) => [String(way.id), way])).values()];
 }
 
 function classifyRoadType(highway = '') {
@@ -400,7 +424,6 @@ export async function POST(request) {
     return Response.json({ nodes: [], edges: [], intersections: 0, summary: 'No mapped streets were found inside the selected area.' }, { headers: { 'Cache-Control': 'no-store' } });
   }
   const graph = buildStreetGraph(ways, polygon);
-  if (graph.nodes.length > 1_800 || graph.edges.length > 3_500) return jsonError('This area has too many streets to save as one graph. Select a smaller area.', 413);
   return Response.json({
     ...graph,
     summary: `OpenStreetMap has ${graph.intersections} road ${graph.intersections === 1 ? 'crossing' : 'crossings'} and ${graph.edges.length} connecting ${graph.edges.length === 1 ? 'edge' : 'edges'} in this area.`

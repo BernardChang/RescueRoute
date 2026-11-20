@@ -215,9 +215,9 @@
       const saved=await persistGraph();
       if(!saved){graph=previous;renderGraph();throw new Error('Intersections were found, but Firebase did not save them. Check your Firestore map write rules and retry.');}
       const intersections=result.intersections??result.nodes.filter((node)=>node.kind==='intersection').length;
-      editorStatus.textContent=`Added ${intersections} AI-verified intersection ${intersections===1?'node':'nodes'} and ${result.edges.length} OSM ${result.edges.length===1?'edge':'edges'} to Firebase.`;
+      editorStatus.textContent=result.roadCoverageIncomplete?result.summary:`Added ${intersections} AI-verified intersection ${intersections===1?'node':'nodes'} and ${result.edges.length} OSM ${result.edges.length===1?'edge':'edges'} to Firebase.`;
       clearAreaSelection();editMode='';map.doubleClickZoom.enable();updateModeButtons();
-    }catch(error){areaAnalysisBusy=false;analyzeAreaButton.disabled=areaPoints.length<3;analyzeAreaButton.textContent='Analyze intersections with AI';editorStatus.textContent=error?.message||'Area analysis failed. Try again.';}
+    }catch(error){areaAnalysisBusy=false;analyzeAreaButton.disabled=areaPoints.length<3;analyzeAreaButton.textContent='Analyze intersections with AI';editorStatus.textContent=error instanceof TypeError&&/fetch/i.test(error.message)?'The map-analysis connection ended before a result arrived. Retry; if it happens again, check the server deployment logs.':error?.message||'Area analysis failed. Try again.';}
   });
   document.getElementById('stop-street-edit').addEventListener('click',()=>{if(editMode==='area')clearAreaSelection();editMode='';edgeStart=null;map.doubleClickZoom.enable();updateModeButtons();editorStatus.textContent='Editor ready. Hover a node to set route endpoints.';renderGraph();});
   map.on('click',(event)=>{if(editMode==='area'){addAreaPoint(event.latlng);return;}if(editMode!=='add')return;graph.nodes.push({id:crypto.randomUUID(),name:nodeName.value.trim()||`Node ${graph.nodes.length+1}`,lat:event.latlng.lat,lng:event.latlng.lng,weight:0});editMode='';routeLayer.clearLayers();document.getElementById('route-result').hidden=true;updateModeButtons();renderGraph();persistGraph();});

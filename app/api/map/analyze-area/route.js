@@ -5,6 +5,12 @@ const maxPoints = 20;
 const maxWaysPerQuery = 400;
 const maxWayNodesPerQuery = 8_000;
 const maxLegacyMultipartBytes = 4_500_000;
+const roadFetchBudgetMs = 75_000;
+const roadRequestTimeoutMs = 7_000;
+const maxRoadTiles = 512;
+const roadFetchConcurrency = 4;
+const aiReviewBudgetMs = 80_000;
+const aiRequestTimeoutMs = 25_000;
 const analysesPerHour = 12;
 const rateWindowMs = 60 * 60 * 1000;
 const analysisTimes = new Map();
@@ -85,74 +91,85 @@ function validatePolygon(value) {
 async function fetchRoads(polygon) {
   const south=Math.min(...polygon.map((point)=>point[1])),north=Math.max(...polygon.map((point)=>point[1]));
   const west=Math.min(...polygon.map((point)=>point[0])),east=Math.max(...polygon.map((point)=>point[0]));
-  const attempts = { count: 0 };
-  const maximumSubdivisionDepth = 7;
+  const deadline = Date.now() + roadFetchBudgetMs;
+  const maximumSubdivisionDepth = 5;
   const minimumTileSpan = 0.00025;
+  const queue = [{ bounds: [south, west, north, east], depth: 0 }];
+  const waysById = new Map();
+  const failures = new Set();
+  let tileCount = 0;
+  let incomplete = false;
 
-  async function fetchTile(bounds, depth = 0) {
+  async function fetchTile({ bounds, depth }) {
     const [tileSouth, tileWest, tileNorth, tileEast] = bounds;
-    attempts.count++;
-    if (attempts.count > 20_000) throw new Error('This map selection needs too many street-data requests. Split it into a few adjacent selections and retry.');
+    tileCount++;
     const query = `[out:json][timeout:18];way["highway"](${tileSouth.toFixed(6)},${tileWest.toFixed(6)},${tileNorth.toFixed(6)},${tileEast.toFixed(6)});out body geom;`;
-    const failures = [];
     let ways = null;
     for (const endpoint of overpassEndpoints) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
       let response;
       try {
         response = await fetch(endpoint, {
           method: 'POST',
           headers: { Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8', 'User-Agent': 'RescueRoute/1.0 (OpenStreetMap map analysis)' },
           body: new URLSearchParams({ data: query }),
-          signal: AbortSignal.timeout(20_000)
+          signal: AbortSignal.timeout(Math.min(roadRequestTimeoutMs, remaining))
         });
       } catch (error) {
-        failures.push(`${new URL(endpoint).host}: ${error?.name === 'TimeoutError' ? 'timeout' : 'network error'}`);
+        failures.add(`${new URL(endpoint).host}: ${error?.name === 'TimeoutError' ? 'timeout' : 'network error'}`);
         continue;
       }
       if (!response.ok) {
-        failures.push(`${new URL(endpoint).host}: HTTP ${response.status}`);
-        if (response.status >= 400 && response.status < 500 && ![406, 408, 413, 425, 429].includes(response.status)) {
-          throw new Error(`OpenStreetMap rejected this selection (HTTP ${response.status}).`);
-        }
+        failures.add(`${new URL(endpoint).host}: HTTP ${response.status}`);
         continue;
       }
       let data;
       try { data = await response.json(); }
-      catch { failures.push(`${new URL(endpoint).host}: invalid response`); continue; }
-      if (data.remark) { failures.push(`${new URL(endpoint).host}: ${String(data.remark).slice(0, 120)}`); continue; }
+      catch { failures.add(`${new URL(endpoint).host}: invalid response`); continue; }
+      if (data.remark) { failures.add(`${new URL(endpoint).host}: ${String(data.remark).slice(0, 120)}`); continue; }
       ways = (data.elements ?? []).filter((element) => element.type === 'way' && Array.isArray(element.nodes) && Array.isArray(element.geometry));
       break;
     }
 
     const tooDense = ways && (ways.length > maxWaysPerQuery || ways.reduce((sum, way) => sum + way.nodes.length, 0) > maxWayNodesPerQuery);
-    const canSplit = depth < maximumSubdivisionDepth && tileNorth - tileSouth > minimumTileSpan && tileEast - tileWest > minimumTileSpan;
-    if (ways && !tooDense) return ways;
+    const canSplit = depth < maximumSubdivisionDepth && tileNorth - tileSouth > minimumTileSpan && tileEast - tileWest > minimumTileSpan && tileCount + queue.length + 4 <= maxRoadTiles;
+    if (ways && !tooDense) {
+      for (const way of ways) waysById.set(String(way.id), way);
+      return;
+    }
 
-    // Dense city blocks can exceed Overpass's comfortable response size even
-    // for a modest selection. Subdivide the query and merge by OSM way ID.
-    // Also subdivide an overloaded query so its smaller children can succeed.
-    if (canSplit && (tooDense || !ways)) {
+    // Split dense or failed tiles, but bound the queue, concurrency, and total
+    // wall time so an overloaded public Overpass server cannot hold the request
+    // until Vercel closes the connection.
+    if (canSplit && Date.now() < deadline) {
       const midLat = (tileSouth + tileNorth) / 2;
       const midLng = (tileWest + tileEast) / 2;
       const children = [
         [tileSouth, tileWest, midLat, midLng], [tileSouth, midLng, midLat, tileEast],
         [midLat, tileWest, tileNorth, midLng], [midLat, midLng, tileNorth, tileEast]
       ];
-      const merged = new Map();
-      for (const child of children) {
-        for (const way of await fetchTile(child, depth + 1)) merged.set(String(way.id), way);
-      }
-      return [...merged.values()];
+      for (const child of children) queue.push({ bounds: child, depth: depth + 1 });
+      return;
     }
-    if (ways) return ways;
-
-    console.error('OpenStreetMap road-data tile failed', bounds, failures);
-    if (failures.some((failure) => failure.includes('HTTP 429'))) throw new Error('OpenStreetMap is busy. Try again shortly.');
-    throw new Error(`OpenStreetMap road servers did not return data (${failures.join('; ')}).`);
+    if (ways) for (const way of ways) waysById.set(String(way.id), way);
+    incomplete = true;
   }
 
-  const ways = await fetchTile([south, west, north, east]);
-  return [...new Map(ways.map((way) => [String(way.id), way])).values()];
+  async function worker() {
+    while (queue.length && Date.now() < deadline) {
+      const tile = queue.shift();
+      if (tile) await fetchTile(tile);
+    }
+  }
+  await Promise.all(Array.from({ length: roadFetchConcurrency }, () => worker()));
+  if (queue.length || Date.now() >= deadline) incomplete = true;
+  if (incomplete) console.warn('OpenStreetMap analysis returned partial coverage', { tileCount, queuedTiles: queue.length, roads: waysById.size });
+  if (!waysById.size && incomplete) {
+    console.error('OpenStreetMap road-data unavailable', { tileCount, failures: [...failures] });
+    throw new Error('OpenStreetMap road servers did not return data in time. Try this area again shortly.');
+  }
+  return { ways: [...waysById.values()], incomplete };
 }
 
 function classifyRoadType(highway = '') {
@@ -393,47 +410,68 @@ async function verifyIntersectionsWithOpenAI(graph) {
     }
   }
   const accepted = new Set();
-  // Keep requests bounded for large urban selections while preserving every
-  // candidate for review. IDs and coordinates originate only from OSM data.
-  for (let offset = 0; offset < candidates.length; offset += 60) {
-    const batch = candidates.slice(offset, offset + 60).map((node) => ({
+  const deadline = Date.now() + aiReviewBudgetMs;
+  const batches = [];
+  for (let offset = 0; offset < candidates.length; offset += 80) {
+    batches.push(candidates.slice(offset, offset + 80).map((node) => ({
       id: node.id,
       latitude: node.lat,
       longitude: node.lng,
       connectedRoads: (edgesByNode.get(node.id) || []).slice(0, 8)
-    }));
-    const response = await fetch('https://api.openai.com/v1/responses', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'gpt-4.1-mini',
-        instructions: 'Review candidate road junctions derived from OpenStreetMap. Return only candidate IDs that represent a real at-grade intersection where two or more distinct paths meet or cross. Exclude simple road seams, endpoints, and grade-separated crossings (bridges/tunnels). Do not infer or invent IDs. Use the supplied OSM road metadata and coordinates only.',
-        input: JSON.stringify({ candidates: batch }),
-        text: { format: { type: 'json_schema', name: 'osm_intersections', strict: true, schema: {
-          type: 'object', additionalProperties: false,
-          properties: { intersection_ids: { type: 'array', items: { type: 'string' } } },
-          required: ['intersection_ids']
-        } } }
-      }),
-      signal: AbortSignal.timeout(45_000)
-    });
-    if (!response.ok) {
-      const details = await response.text().catch(() => '');
-      console.error('OpenAI intersection review failed', response.status, details.slice(0, 500));
-      throw new Error(response.status === 401 || response.status === 403
-        ? 'OpenAI rejected the server API key. Check OPENAI_API_KEY in the deployment environment.'
-        : 'OpenAI could not analyze the OSM intersections right now. Try again shortly.');
+    })));
+  }
+  let nextBatch = 0;
+  let failure = null;
+  async function reviewWorker() {
+    while (!failure && Date.now() < deadline) {
+      const batch = batches[nextBatch++];
+      if (!batch) return;
+      let response;
+      try {
+        response = await fetch('https://api.openai.com/v1/responses', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: 'gpt-4.1-mini',
+            instructions: 'Review candidate road junctions derived from OpenStreetMap. Return only candidate IDs that represent a real at-grade intersection where two or more distinct paths meet or cross. Exclude simple road seams, endpoints, and grade-separated crossings (bridges/tunnels). Do not infer or invent IDs. Use the supplied OSM road metadata and coordinates only.',
+            input: JSON.stringify({ candidates: batch }),
+            text: { format: { type: 'json_schema', name: 'osm_intersections', strict: true, schema: {
+              type: 'object', additionalProperties: false,
+              properties: { intersection_ids: { type: 'array', items: { type: 'string' } } },
+              required: ['intersection_ids']
+            } } }
+          }),
+          signal: AbortSignal.timeout(Math.min(aiRequestTimeoutMs, deadline - Date.now()))
+        });
+      } catch {
+        failure = 'OpenAI intersection review timed out. The map was not changed; retry with a smaller area.';
+        return;
+      }
+      if (!response.ok) {
+        const details = await response.text().catch(() => '');
+        console.error('OpenAI intersection review failed', response.status, details.slice(0, 500));
+        failure = response.status === 401 || response.status === 403
+          ? 'OpenAI rejected the server API key. Check OPENAI_API_KEY in the deployment environment.'
+          : 'OpenAI could not analyze the OSM intersections right now. Try again shortly.';
+        return;
+      }
+      const result = await response.json();
+      let parsed;
+      try {
+        const outputText = result.output_text || result.output?.flatMap((item) => item.content || []).find((item) => item.type === 'output_text')?.text;
+        parsed = JSON.parse(outputText || '');
+      } catch {
+        failure = 'OpenAI returned an invalid intersection analysis. Try again shortly.';
+        return;
+      }
+      const validIds = new Set(batch.map((candidate) => candidate.id));
+      for (const id of parsed.intersection_ids || []) if (validIds.has(id)) accepted.add(id);
     }
-    const result = await response.json();
-    let parsed;
-    try {
-      const outputText = result.output_text || result.output?.flatMap((item) => item.content || []).find((item) => item.type === 'output_text')?.text;
-      parsed = JSON.parse(outputText || '');
-    } catch {
-      throw new Error('OpenAI returned an invalid intersection analysis. Try again shortly.');
-    }
-    const validIds = new Set(batch.map((candidate) => candidate.id));
-    for (const id of parsed.intersection_ids || []) if (validIds.has(id)) accepted.add(id);
+  }
+  await Promise.all(Array.from({ length: Math.min(3, batches.length) }, () => reviewWorker()));
+  if (failure) throw new Error(failure);
+  if (nextBatch < batches.length || Date.now() >= deadline) {
+    throw new Error('This area has more intersections than can be verified in one request. Draw a few adjacent sections and analyze each.');
   }
   return [...accepted];
 }
@@ -473,12 +511,13 @@ export async function POST(request) {
   const polygon = validatePolygon(body?.polygon);
   if (!polygon) return jsonError('Draw a smaller area with at least three corners.', 400);
 
-  let ways;
+  let roadResult;
   try {
-    ways = await fetchRoads(polygon);
+    roadResult = await fetchRoads(polygon);
   } catch (error) {
     return jsonError(`${error.message || 'Could not load OpenStreetMap road data.'} No nodes were created because street intersections must come from OpenStreetMap data.`, 502);
   }
+  const { ways, incomplete: roadCoverageIncomplete } = roadResult;
   if (!ways.length){
     return Response.json({ nodes: [], edges: [], intersections: 0, summary: 'No mapped streets were found inside the selected area.' }, { headers: { 'Cache-Control': 'no-store' } });
   }
@@ -500,6 +539,7 @@ export async function POST(request) {
   };
   return Response.json({
     ...graph,
-    summary: `OpenAI verified ${graph.intersections} OpenStreetMap ${graph.intersections === 1 ? 'intersection' : 'intersections'} and ${graph.edges.length} connecting ${graph.edges.length === 1 ? 'edge' : 'edges'}.`
+    roadCoverageIncomplete,
+    summary: `OpenAI verified ${graph.intersections} OpenStreetMap ${graph.intersections === 1 ? 'intersection' : 'intersections'} and ${graph.edges.length} connecting ${graph.edges.length === 1 ? 'edge' : 'edges'}.${roadCoverageIncomplete ? ' Some OSM tiles were unavailable, so this result may be incomplete; analyze the area again to fill gaps.' : ''}`
   }, { headers: { 'Cache-Control': 'no-store' } });
 }

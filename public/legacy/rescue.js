@@ -77,7 +77,75 @@
   function updateRouteSelectionStatus(){document.getElementById('route-selection-status').textContent=`${selectedRouteLabel()}. Hover over a node for 2 seconds to set a route point or edit its weight.`;}
   function saveRouteSelection(){try{localStorage.setItem(routeStorageKey,JSON.stringify({startId:routeStartId,endId:routeEndId}));}catch{}}
   function updateRouteMarkerStyles(){for(const [id,marker] of markersByNodeId){const icon=marker.getElement()?.querySelector('.custom-node-icon');if(!icon)continue;const isStart=id===routeStartId;icon.classList.toggle('is-route-start',isStart);icon.classList.toggle('is-route-end',id===routeEndId&&!isStart);}}
-  function setRouteEndpoint(role,node){if(role==='start')routeStartId=node.id;else routeEndId=node.id;saveRouteSelection();routeLayer.clearLayers();document.getElementById('route-result').hidden=true;updateRouteSelectionStatus();updateRouteMarkerStyles();map.closePopup();}
+  function setRouteEndpoint(role,node){
+    if(role!=='start'&&role!=='end')return;
+    if(!graph.nodes.some((item)=>item.id===node.id))return;
+    if(role==='start')routeStartId=node.id;
+    else routeEndId=node.id;
+    saveRouteSelection();
+    routeLayer.clearLayers();
+    document.getElementById('route-result').hidden=true;
+    map.closePopup();
+    renderGraph();
+    updateRouteSelectionStatus();
+    editorStatus.textContent=`${role==='start'?'Start':'End'} node set to ${node.name||'Map node'}.`;
+  }
+  async function deleteNode(nodeId){
+    const node=graph.nodes.find((item)=>item.id===nodeId);
+    if(!node)return;
+    const previousGraph=graph;
+    const previousStartId=routeStartId;
+    const previousEndId=routeEndId;
+    const previousEdgeStart=edgeStart;
+    const signedIn=Boolean(cloudClient?.auth.currentUser);
+    if(signedIn&&!cloudSyncReady){editorStatus.textContent='Wait for the shared Firebase map to finish loading, then delete the node again.';return;}
+    const canSync=Boolean(cloudClient?.auth.currentUser&&cloudSyncReady);
+    graph={
+      nodes:graph.nodes.filter((item)=>item.id!==nodeId),
+      edges:graph.edges.filter((item)=>item.from!==nodeId&&item.to!==nodeId)
+    };
+    if(routeStartId===nodeId)routeStartId=null;
+    if(routeEndId===nodeId)routeEndId=null;
+    if(edgeStart===nodeId)edgeStart=null;
+    saveRouteSelection();
+    routeLayer.clearLayers();
+    document.getElementById('route-result').hidden=true;
+    map.closePopup();
+    renderGraph();
+    updateRouteSelectionStatus();
+    const saved=await persistGraph();
+    if(!saved&&canSync){
+      graph=previousGraph;
+      routeStartId=previousStartId;
+      routeEndId=previousEndId;
+      edgeStart=previousEdgeStart;
+      saveRouteSelection();
+      try{localStorage.setItem(storageKey,JSON.stringify(graph));}catch{}
+      renderGraph();
+      updateRouteSelectionStatus();
+      const reason=editorStatus.textContent;
+      editorStatus.textContent=reason&&reason.startsWith('Firebase save failed')
+        ?`Node was kept because Firebase rejected the delete. ${reason}`
+        :'Node was kept because the shared map could not be saved. Retry when Firebase is connected.';
+    }
+  }
+  document.addEventListener('click',(event)=>{
+    const target=event.target instanceof Element?event.target:null;
+    const routeButton=target?.closest('[data-route-role][data-route-node-id]');
+    if(routeButton){
+      event.preventDefault();
+      event.stopPropagation();
+      const node=graph.nodes.find((item)=>item.id===routeButton.dataset.routeNodeId);
+      if(node)setRouteEndpoint(routeButton.dataset.routeRole,node);
+      return;
+    }
+    const deleteButton=target?.closest('[data-delete-node]');
+    if(deleteButton){
+      event.preventDefault();
+      event.stopPropagation();
+      deleteNode(deleteButton.dataset.deleteNode);
+    }
+  },true);
   function allowedEdgeTypes(){return selected==='car'?new Set(['main']):selected==='motorcycle'?new Set(['main','moto']):new Set(['main','moto','foot']);}
   function findShortestPath({useWeights=true,respectOneWay=true}={}){
     const start=graph.nodes.find((node)=>node.id===routeStartId);const end=graph.nodes.find((node)=>node.id===routeEndId);
@@ -168,11 +236,11 @@
       const marker=L.marker([node.lat,node.lng],{icon,draggable:true}).addTo(customMarkers);
       markersByNodeId.set(node.id,marker);
       marker.on('dragend',()=>{const point=marker.getLatLng();node.lat=point.lat;node.lng=point.lng;routeLayer.clearLayers();document.getElementById('route-result').hidden=true;renderGraph();persistGraph();});
-      marker.bindPopup(`<div class="street-popup"><strong>${safeText(node.name||'Map node')}</strong><br>${node.lat.toFixed(5)}, ${node.lng.toFixed(5)}${photoAccessMarkup(node)}<div class="weight-editor"><label>Impediment weight <span><output data-node-weight-value>${weightScore(node)}</output>/10</span><input type="range" data-node-weight min="0" max="10" step="1" value="${weightScore(node)}"></label><small>0 = clear · 10 = heavily impeded</small></div><div class="weight-photo-control"><label>📷 Upload road photo to assess access and weight<input type="file" data-weight-photo accept="image/jpeg,image/png,image/webp" capture="environment" hidden></label><small data-weight-photo-status>Review the AI result on Photo uploads, then apply it to this node.</small></div><div class="node-route-actions"><button type="button" data-route-role="start">Set as start</button><button type="button" data-route-role="end">Set as end</button></div><button type="button" data-delete-node="${safeText(node.id)}">Delete node</button></div>`,{autoClose:true,closeOnClick:true,maxWidth:240});
+      marker.bindPopup(`<div class="street-popup"><strong>${safeText(node.name||'Map node')}</strong><br>${node.lat.toFixed(5)}, ${node.lng.toFixed(5)}<div class="node-route-actions"><button type="button" data-route-role="start" data-route-node-id="${safeText(node.id)}">Set as start</button><button type="button" data-route-role="end" data-route-node-id="${safeText(node.id)}">Set as end</button></div><button type="button" data-delete-node="${safeText(node.id)}">Delete node</button>${photoAccessMarkup(node)}<div class="weight-editor"><label>Impediment weight <span><output data-node-weight-value>${weightScore(node)}</output>/10</span><input type="range" data-node-weight min="0" max="10" step="1" value="${weightScore(node)}"></label><small>0 = clear · 10 = heavily impeded</small></div><div class="weight-photo-control"><label>📷 Upload road photo to assess access and weight<input type="file" data-weight-photo accept="image/jpeg,image/png,image/webp" capture="environment" hidden></label><small data-weight-photo-status>Review the AI result on Photo uploads, then apply it to this node.</small></div></div>`,{autoClose:true,closeOnClick:true,maxWidth:240,autoPan:true,autoPanPadding:[18,18]});
       let hoverTimer=null;const cancelHoverPopup=()=>{clearTimeout(hoverTimer);hoverTimer=null;};
       marker.on('mouseover',()=>{cancelHoverPopup();if(editMode==='edge'||editMode==='area')return;hoverTimer=setTimeout(()=>marker.openPopup(),2000);});
       marker.on('mouseout dragstart click',cancelHoverPopup);
-      marker.on('popupopen',(event)=>{const popup=event.popup.getElement();const weightInput=popup.querySelector('[data-node-weight]');weightInput.oninput=()=>{popup.querySelector('[data-node-weight-value]').value=weightInput.value;popup.querySelector('[data-node-weight-value]').textContent=weightInput.value;};weightInput.onchange=()=>{node.weight=normalizeWeight(weightInput.value);routeLayer.clearLayers();document.getElementById('route-result').hidden=true;persistGraph();};popup.querySelector('[data-weight-photo]').onchange=(change)=>startMapWeightPhotoFlow(change.currentTarget,node,'node');popup.querySelectorAll('[data-route-role]').forEach((button)=>{button.onclick=()=>setRouteEndpoint(button.dataset.routeRole,node);});const deleteButton=popup.querySelector('[data-delete-node]');if(deleteButton)deleteButton.onclick=()=>{graph.nodes=graph.nodes.filter((item)=>item.id!==node.id);graph.edges=graph.edges.filter((item)=>item.from!==node.id&&item.to!==node.id);if(routeStartId===node.id)routeStartId=null;if(routeEndId===node.id)routeEndId=null;saveRouteSelection();routeLayer.clearLayers();document.getElementById('route-result').hidden=true;edgeStart=null;renderGraph();persistGraph();updateRouteSelectionStatus();map.closePopup();};});
+      marker.on('popupopen',(event)=>{const popup=event.popup.getElement();const weightInput=popup.querySelector('[data-node-weight]');weightInput.oninput=()=>{popup.querySelector('[data-node-weight-value]').value=weightInput.value;popup.querySelector('[data-node-weight-value]').textContent=weightInput.value;};weightInput.onchange=()=>{node.weight=normalizeWeight(weightInput.value);routeLayer.clearLayers();document.getElementById('route-result').hidden=true;persistGraph();};popup.querySelector('[data-weight-photo]').onchange=(change)=>startMapWeightPhotoFlow(change.currentTarget,node,'node');});
       marker.on('click',()=>{
         if(editMode==='area'){addAreaPoint(marker.getLatLng());return;}
         if(editMode==='edge'){

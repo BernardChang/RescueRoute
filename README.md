@@ -1,6 +1,6 @@
 # RescueRoute
 
-RescueRoute is a Manila city access map with Firebase sign-in, a street node and edge editor, shortest-path routing, community photo reports, and authenticated photo analysis.
+RescueRoute is a Manila city access map with Firebase sign-in, a street node and edge editor, AI-verified OpenStreetMap intersection creation, shortest-path routing, community photo reports, and authenticated photo analysis.
 
 ## Stack
 
@@ -9,6 +9,7 @@ RescueRoute is a Manila city access map with Firebase sign-in, a street node and
 - Leaflet and OpenStreetMap tiles.
 - Firebase Authentication and Cloud Firestore for the shared Manila node-and-edge graph. Existing `connectors` records are still read while they migrate to `edges`.
 - A* compares the distance-only shortest route with the lowest weighted-cost route, using edge geometry, one-way access, selected travel mode, and optional node/edge impediment weights from 0 (clear) to 10 (heavily impeded).
+- Signed-in users can outline any map area, load OpenStreetMap roads, and use server-side OpenAI analysis to verify candidate intersections. Verified nodes and road-following edges are added to the shared Firebase graph.
 - Browser IndexedDB for field photos and their analysis results.
 - OpenAI Responses API for photo analysis, called only from the Node.js backend.
 
@@ -16,7 +17,7 @@ RescueRoute is a Manila city access map with Firebase sign-in, a street node and
 
 Use Node.js 20.9 or newer. Install dependencies with `pnpm install`, then start Next.js with `pnpm dev` and open `http://localhost:3000`.
 
-Copy `.env.example` to `.env.local` and fill in the values to configure photo analysis and Firebase. Keep `.env.local` out of source control. Firebase web settings are served to the browser at runtime from `/api/firebase-config`; Firebase web API keys and project identifiers are public configuration, while `OPENAI_API_KEY` stays on the server. The shared map uses Firestore document `cityMaps/manila`; its nodes, edges, geometry, and weights are read in real time by every visitor, while signed-in users can publish shared edits. `.firebaserc` links this project to `waicy-9666a`; `firebase.json` deploys the merged Firestore rules for both the existing per-user route graph and the shared Manila map. Firestore rules deployments replace the project's full ruleset, so preserve both rule blocks when making future changes.
+Copy `.env.example` to `.env.local` and fill in the values to configure photo and intersection analysis and Firebase. Keep `.env.local` out of source control. Firebase web settings are served to the browser at runtime from `/api/firebase-config`; Firebase web API keys and project identifiers are public configuration, while `OPENAI_API_KEY` stays on the server and must also be configured in Vercel for production. The shared map uses Firestore document `cityMaps/manila`; its nodes, edges, geometry, and weights are read in real time by every visitor, while signed-in users can publish shared edits. `.firebaserc` links this project to `waicy-9666a`; `firebase.json` deploys the merged Firestore rules for both the existing per-user route graph and the shared Manila map. Firestore rules deployments replace the project's full ruleset, so preserve both rule blocks when making future changes.
 
 Deploy rules with `pnpm dlx firebase-tools deploy --only firestore:rules --project waicy-9666a` from an authenticated Firebase CLI session.
 

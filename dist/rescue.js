@@ -34,6 +34,9 @@
   const nodeType=document.getElementById('street-type');
   const customLayers={main:L.layerGroup().addTo(map),moto:L.layerGroup().addTo(map),foot:L.layerGroup().addTo(map)};
   const customMarkers=L.layerGroup().addTo(map);
+  const areaLayer=L.layerGroup().addTo(map);
+  let areaPoints=[];
+  let areaAnalysisBusy=false;
   const markersByNodeId=new Map();
   const routeLayer=L.layerGroup().addTo(map);
   const normalizeGraph=(saved)=>{
@@ -119,7 +122,23 @@
     showPage('uploads',true);window.dispatchEvent(new CustomEvent('rescue:map-weight-photo',{detail:request}));
   }
   window.rescueRouteApplyMapWeight=async({targetType,targetId,weight,photoAccess})=>{const item=(targetType==='node'?graph.nodes:graph.edges).find((entry)=>entry.id===targetId);if(!item)throw new Error('This map item no longer exists. Return to the map and select it again.');if(!cloudClient?.auth.currentUser)throw new Error('Sign in before saving a map weight.');if(!cloudSyncReady)throw new Error('The shared map is still loading. Wait a moment and retry.');const oldWeight=item.weight,oldPhotoAccess=item.photoAccess;item.weight=normalizeWeight(weight);item.photoAccess=photoAccess;routeLayer.clearLayers();document.getElementById('route-result').hidden=true;renderGraph();const saved=await persistGraph();if(!saved){item.weight=oldWeight;item.photoAccess=oldPhotoAccess;try{localStorage.setItem(storageKey,JSON.stringify(graph));}catch{}renderGraph();throw new Error('The suggested access and weight could not be saved to Firebase. Check the map status on the map page and retry.');}return item.weight;};
-  const modeButtons=[['add-street-node','add'],['add-street-edge','edge']];
+  const modeButtons=[['add-street-node','add'],['add-street-edge','edge'],['select-map-area','area']];
+  const analyzeAreaButton=document.getElementById('analyze-map-area');
+  const cancelAreaButton=document.getElementById('cancel-map-area');
+  function updateAreaSelection(){
+    areaLayer.clearLayers();
+    for(const point of areaPoints)L.circleMarker([point.lat,point.lng],{radius:6,color:'#fff',weight:2,fillColor:'#2865d7',fillOpacity:1,interactive:false}).addTo(areaLayer);
+    if(areaPoints.length>1)L.polyline([...areaPoints.map((point)=>[point.lat,point.lng]),...(areaPoints.length>=3?[[areaPoints[0].lat,areaPoints[0].lng]]:[])],{color:'#2865d7',weight:3,dashArray:'8 7',interactive:false}).addTo(areaLayer);
+    analyzeAreaButton.disabled=areaPoints.length<3||areaAnalysisBusy;
+    cancelAreaButton.hidden=editMode!=='area';
+  }
+  function addAreaPoint(point){
+    if(areaPoints.length>=20){editorStatus.textContent='Area outlines can have up to 20 corners.';return;}
+    areaPoints.push({lat:point.lat,lng:point.lng});
+    updateAreaSelection();
+    editorStatus.textContent=areaPoints.length<3?`Area corner ${areaPoints.length} added. Add at least ${3-areaPoints.length} more.`:`Area selected with ${areaPoints.length} corners. Analyze to find its OSM intersections.`;
+  }
+  function clearAreaSelection(){areaPoints=[];areaLayer.clearLayers();areaAnalysisBusy=false;analyzeAreaButton.disabled=true;analyzeAreaButton.textContent='Analyze intersections with AI';cancelAreaButton.hidden=true;}
   function renderGraph(){
     Object.values(customLayers).forEach((layer)=>layer.clearLayers());
     customMarkers.clearLayers();
@@ -141,10 +160,11 @@
       marker.on('dragend',()=>{const point=marker.getLatLng();node.lat=point.lat;node.lng=point.lng;routeLayer.clearLayers();document.getElementById('route-result').hidden=true;renderGraph();persistGraph();});
       marker.bindPopup(`<div class="street-popup"><strong>${safeText(node.name||'Map node')}</strong><br>${node.lat.toFixed(5)}, ${node.lng.toFixed(5)}${photoAccessMarkup(node)}<div class="weight-editor"><label>Impediment weight <span><output data-node-weight-value>${weightScore(node)}</output>/10</span><input type="range" data-node-weight min="0" max="10" step="1" value="${weightScore(node)}"></label><small>0 = clear · 10 = heavily impeded</small></div><div class="weight-photo-control"><label>📷 Upload road photo to assess access and weight<input type="file" data-weight-photo accept="image/jpeg,image/png,image/webp" capture="environment" hidden></label><small data-weight-photo-status>Review the AI result on Photo uploads, then apply it to this node.</small></div><div class="node-route-actions"><button type="button" data-route-role="start">Set as start</button><button type="button" data-route-role="end">Set as end</button></div><button type="button" data-delete-node="${safeText(node.id)}">Delete node</button></div>`,{autoClose:true,closeOnClick:true,maxWidth:240});
       let hoverTimer=null;const cancelHoverPopup=()=>{clearTimeout(hoverTimer);hoverTimer=null;};
-      marker.on('mouseover',()=>{cancelHoverPopup();if(editMode==='edge')return;hoverTimer=setTimeout(()=>marker.openPopup(),2000);});
+      marker.on('mouseover',()=>{cancelHoverPopup();if(editMode==='edge'||editMode==='area')return;hoverTimer=setTimeout(()=>marker.openPopup(),2000);});
       marker.on('mouseout dragstart click',cancelHoverPopup);
       marker.on('popupopen',(event)=>{const popup=event.popup.getElement();const weightInput=popup.querySelector('[data-node-weight]');weightInput.oninput=()=>{popup.querySelector('[data-node-weight-value]').value=weightInput.value;popup.querySelector('[data-node-weight-value]').textContent=weightInput.value;};weightInput.onchange=()=>{node.weight=normalizeWeight(weightInput.value);routeLayer.clearLayers();document.getElementById('route-result').hidden=true;persistGraph();};popup.querySelector('[data-weight-photo]').onchange=(change)=>startMapWeightPhotoFlow(change.currentTarget,node,'node');popup.querySelectorAll('[data-route-role]').forEach((button)=>{button.onclick=()=>setRouteEndpoint(button.dataset.routeRole,node);});const deleteButton=popup.querySelector('[data-delete-node]');if(deleteButton)deleteButton.onclick=()=>{graph.nodes=graph.nodes.filter((item)=>item.id!==node.id);graph.edges=graph.edges.filter((item)=>item.from!==node.id&&item.to!==node.id);if(routeStartId===node.id)routeStartId=null;if(routeEndId===node.id)routeEndId=null;saveRouteSelection();routeLayer.clearLayers();document.getElementById('route-result').hidden=true;edgeStart=null;renderGraph();persistGraph();updateRouteSelectionStatus();map.closePopup();};});
       marker.on('click',()=>{
+        if(editMode==='area'){addAreaPoint(marker.getLatLng());return;}
         if(editMode==='edge'){
           if(!edgeStart){edgeStart=node.id;editorStatus.textContent=`Start node selected: ${node.name||'Node'}. Choose the other node.`;renderGraph();return;}
           if(edgeStart===node.id){edgeStart=null;editorStatus.textContent='Choose two different nodes for an edge.';renderGraph();return;}
@@ -160,10 +180,37 @@
     }
     for(const [type,layer] of Object.entries(customLayers)){const input=document.querySelector(`[data-layer="${type}"]`);if(input?.checked)layer.addTo(map);}
   }
-  function updateModeButtons(){for(const [id,mode] of modeButtons)document.getElementById(id).classList.toggle('active',editMode===mode);document.getElementById('city-map').style.cursor=editMode==='add'?'crosshair':'';}
-  modeButtons.forEach(([id,mode])=>document.getElementById(id).addEventListener('click',()=>{editMode=editMode===mode?'':mode;edgeStart=null;editorStatus.textContent=editMode==='add'?'Click the map to place an intersection node.':editMode==='edge'?'Select two nodes to create an edge between them.':'Editor ready. Add nodes and edges, or hover a node to set route endpoints.';updateModeButtons();renderGraph();}));
-  document.getElementById('stop-street-edit').addEventListener('click',()=>{editMode='';edgeStart=null;updateModeButtons();editorStatus.textContent='Editor ready. Hover a node to set route endpoints.';renderGraph();});
-  map.on('click',(event)=>{if(editMode!=='add')return;graph.nodes.push({id:crypto.randomUUID(),name:nodeName.value.trim()||`Node ${graph.nodes.length+1}`,lat:event.latlng.lat,lng:event.latlng.lng,weight:0});editMode='';routeLayer.clearLayers();document.getElementById('route-result').hidden=true;updateModeButtons();renderGraph();persistGraph();});
+  function updateModeButtons(){for(const [id,mode] of modeButtons)document.getElementById(id).classList.toggle('active',editMode===mode);document.getElementById('city-map').style.cursor=editMode==='add'||editMode==='area'?'crosshair':'';cancelAreaButton.hidden=editMode!=='area';}
+  modeButtons.forEach(([id,mode])=>document.getElementById(id).addEventListener('click',()=>{if(editMode==='area')clearAreaSelection();editMode=editMode===mode?'':mode;edgeStart=null;if(editMode==='area'){map.doubleClickZoom.disable();updateAreaSelection();editorStatus.textContent='Click around the map to draw an area. Add at least three corners, then analyze.';}else{map.doubleClickZoom.enable();editorStatus.textContent=editMode==='add'?'Click the map to place an intersection node.':editMode==='edge'?'Select two nodes to create an edge between them.':'Editor ready. Add nodes and edges, or hover a node to set route endpoints.';}updateModeButtons();renderGraph();}));
+  cancelAreaButton.addEventListener('click',()=>{clearAreaSelection();editMode='';map.doubleClickZoom.enable();updateModeButtons();editorStatus.textContent='Area selection canceled.';});
+  analyzeAreaButton.addEventListener('click',async()=>{
+    if(areaPoints.length<3||areaAnalysisBusy)return;
+    const user=cloudClient?.auth.currentUser;
+    if(!user){editorStatus.textContent='Sign in before analyzing and saving map intersections.';return;}
+    if(!cloudSyncReady){editorStatus.textContent='Wait for the shared Firebase map to finish loading, then try again.';return;}
+    areaAnalysisBusy=true;analyzeAreaButton.disabled=true;analyzeAreaButton.textContent='Analyzing…';editorStatus.textContent='Loading OpenStreetMap roads and asking OpenAI to verify intersections…';
+    try{
+      const token=await user.getIdToken();
+      const response=await fetch('/api/map/analyze-area',{method:'POST',headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json',Accept:'application/json'},body:JSON.stringify({polygon:areaPoints.map((point)=>[point.lat,point.lng])})});
+      const result=await response.json().catch(()=>({}));
+      if(!response.ok)throw new Error(result.error||`Area analysis failed (HTTP ${response.status}).`);
+      if(!result.nodes?.length){editorStatus.textContent=result.summary||'No intersections were verified in this area.';clearAreaSelection();editMode='';map.doubleClickZoom.enable();updateModeButtons();return;}
+      const previous=graph;
+      const nodesById=new Map(graph.nodes.map((node)=>[node.id,node]));
+      for(const node of result.nodes)nodesById.set(node.id,node);
+      const edgesById=new Map(graph.edges.map((edge)=>[edge.id,edge]));
+      for(const edge of result.edges||[])edgesById.set(edge.id,edge);
+      graph={nodes:[...nodesById.values()],edges:[...edgesById.values()]};
+      routeLayer.clearLayers();document.getElementById('route-result').hidden=true;renderGraph();
+      const saved=await persistGraph();
+      if(!saved){graph=previous;renderGraph();throw new Error('Intersections were found, but Firebase did not save them. Check your Firestore map write rules and retry.');}
+      const intersections=result.intersections??result.nodes.filter((node)=>node.kind==='intersection').length;
+      editorStatus.textContent=`Added ${intersections} AI-verified intersection ${intersections===1?'node':'nodes'} and ${result.edges.length} OSM ${result.edges.length===1?'edge':'edges'} to Firebase.`;
+      clearAreaSelection();editMode='';map.doubleClickZoom.enable();updateModeButtons();
+    }catch(error){areaAnalysisBusy=false;analyzeAreaButton.disabled=areaPoints.length<3;analyzeAreaButton.textContent='Analyze intersections with AI';editorStatus.textContent=error?.message||'Area analysis failed. Try again.';}
+  });
+  document.getElementById('stop-street-edit').addEventListener('click',()=>{if(editMode==='area')clearAreaSelection();editMode='';edgeStart=null;map.doubleClickZoom.enable();updateModeButtons();editorStatus.textContent='Editor ready. Hover a node to set route endpoints.';renderGraph();});
+  map.on('click',(event)=>{if(editMode==='area'){addAreaPoint(event.latlng);return;}if(editMode!=='add')return;graph.nodes.push({id:crypto.randomUUID(),name:nodeName.value.trim()||`Node ${graph.nodes.length+1}`,lat:event.latlng.lat,lng:event.latlng.lng,weight:0});editMode='';routeLayer.clearLayers();document.getElementById('route-result').hidden=true;updateModeButtons();renderGraph();persistGraph();});
   document.getElementById('clear-street-map').addEventListener('click',()=>{if(!graph.nodes.length&&!graph.edges.length){editorStatus.textContent='There are no custom nodes or edges to clear.';return;}if(!window.confirm('Delete all nodes and edges saved in this browser?'))return;graph={nodes:[],edges:[]};routeStartId=null;routeEndId=null;saveRouteSelection();routeLayer.clearLayers();renderGraph();persistGraph();updateRouteSelectionStatus();});
   for (const [key,road] of Object.entries(samples)) {
     const style={color:colors[key],weight:key==='main'?6:5,opacity:.94,lineCap:'round',lineJoin:'round',dashArray:key==='moto'?'10 8':key==='foot'?'2 9':null};

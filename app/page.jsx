@@ -14,7 +14,7 @@ export default async function HomePage() {
     <>
       <div dangerouslySetInnerHTML={{ __html: markup }} />
       <Script src="/legacy/app.js" strategy="afterInteractive" />
-      <Script src="/legacy/rescue.js?v=manual-map-editor-v1" strategy="afterInteractive" />
+      <Script src="/legacy/rescue.js?v=osm-ai-intersections-v1" strategy="afterInteractive" />
       <Script src="/legacy/uploads.js" type="module" strategy="afterInteractive" />
     </>
   );

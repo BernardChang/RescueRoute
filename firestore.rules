@@ -47,9 +47,10 @@ service cloud.firestore {
             )
           ) && request.resource.data.updatedAt is number
         || (
-          request.resource.data.keys().hasOnly(['format', 'nodeChunks', 'edgeChunks', 'updatedAt'])
-          && request.resource.data.keys().hasAll(['format', 'nodeChunks', 'edgeChunks', 'updatedAt'])
+          request.resource.data.keys().hasOnly(['format', 'generation', 'nodeChunks', 'edgeChunks', 'updatedAt'])
+          && request.resource.data.keys().hasAll(['format', 'generation', 'nodeChunks', 'edgeChunks', 'updatedAt'])
           && request.resource.data.format == 'chunked-v1'
+          && request.resource.data.generation is string
           && request.resource.data.nodeChunks is int
           && request.resource.data.nodeChunks >= 0
           && request.resource.data.nodeChunks <= 200
@@ -67,9 +68,13 @@ service cloud.firestore {
       match /chunks/{chunkId} {
         allow read: if true;
         allow create, update: if signedIn()
-          && request.resource.data.keys().hasOnly(['kind', 'items'])
-          && request.resource.data.keys().hasAll(['kind', 'items'])
+          && request.resource.data.keys().hasOnly(['kind', 'generation', 'index', 'items'])
+          && request.resource.data.keys().hasAll(['kind', 'generation', 'index', 'items'])
           && request.resource.data.kind in ['nodes', 'edges']
+          && request.resource.data.generation is string
+          && request.resource.data.index is int
+          && request.resource.data.index >= 0
+          && request.resource.data.index < 200
           && request.resource.data.items is list
           && request.resource.data.items.size() <= 2000;
         allow delete: if signedIn();

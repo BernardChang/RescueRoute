@@ -269,6 +269,11 @@ if (form) {
         const title = document.createElement('strong'); title.textContent = photo.name || 'Photo'; body.append(title);
         if (photo.caption) { const copy = document.createElement('p'); copy.textContent = photo.caption; body.append(copy); }
         const dateLine = document.createElement('small'); dateLine.textContent = `${photo.uploaderEmail || 'RescueRoute user'} · ${new Date(photo.uploadedAt).toLocaleString()}`; body.append(dateLine);
+        if (photo.mapTargetType && photo.mapTargetId) {
+          const targetLine = document.createElement('small');
+          targetLine.textContent = `Map evidence for ${photo.mapTargetType}: ${photo.mapTargetName || photo.mapTargetId}`;
+          body.append(targetLine);
+        }
         const analysisPanel = document.createElement('section'); analysisPanel.className = 'photo-analysis';
         const analysisTitle = document.createElement('strong'); analysisTitle.className = 'photo-analysis-title'; analysisTitle.textContent = 'AI access assessment'; analysisPanel.append(analysisTitle);
         const assessment = normalizeAssessment(photo.analysis);
@@ -322,6 +327,7 @@ if (form) {
   window.addEventListener('rescue:map-weight-photo', async (event) => {
     const request = event.detail;
     if (!request?.file || !['node', 'edge'].includes(request.targetType)) return;
+    request.id ||= crypto.randomUUID();
     mapWeightRequest = request;
     mapWeightFlow.hidden = false; form.hidden = true; adminGallery.hidden = true; locked.hidden = true;
     mapWeightAssessment.replaceChildren(); mapWeightApply.disabled = true;
@@ -344,7 +350,23 @@ if (form) {
         status(mapWeightStatus, 'The photo does not clearly show a road. The current weight was left unchanged.', true);
         return;
       }
-      status(mapWeightStatus, `AI suggests ${assessment.recommended_weight}/10. Review the assessment before applying it.`);
+      let photoArchived = false;
+      try {
+        await savePhoto({
+          id: request.id, blob: request.file, name: request.file.name || 'Map road photo', type: request.file.type,
+          size: request.file.size, caption: `AI road access evidence for ${request.targetName}.`,
+          uploaderEmail: request.uploaderEmail || user.email || '', uploaderName: user.displayName || '',
+          uploadedAt: new Date().toISOString(), analysis: assessment, analysisStatus: 'complete', analysisError: '',
+          analyzedAt: new Date().toISOString(), mapTargetType: request.targetType, mapTargetId: request.targetId,
+          mapTargetName: request.targetName,
+        });
+        photoArchived = true;
+      } catch (error) {
+        console.warn('Map photo could not be archived locally', error);
+      }
+      status(mapWeightStatus, photoArchived
+        ? `AI suggests ${assessment.recommended_weight}/10. The photo and assessment are saved in this browser’s Photo uploads archive. Review, then apply them to the map.`
+        : `AI suggests ${assessment.recommended_weight}/10. The access assessment is ready; browser photo archive was unavailable. Review, then apply it to the map.`);
       mapWeightApply.textContent = `Apply weight ${assessment.recommended_weight}/10 to ${request.targetType}`;
       mapWeightApply.disabled = false;
       mapWeightApply.onclick = async () => {
@@ -369,6 +391,9 @@ if (form) {
               },
               weightReason: assessment.weight_reason,
               assessedAt: new Date().toISOString(),
+              photoId: request.id,
+              photoName: request.file.name || 'Map road photo',
+              photoUploadedAt: new Date().toISOString(),
             },
           });
           status(mapWeightStatus, `Saved ${request.targetType} weight ${savedWeight}/10 and ${assessment.access_level.replaceAll('_', ' ')} access to the shared map. Routes now use this access assessment.`);

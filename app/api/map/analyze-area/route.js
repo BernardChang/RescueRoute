@@ -156,13 +156,26 @@ async function fetchRoads(polygon) {
     incomplete = true;
   }
 
-  async function worker() {
-    while (queue.length && Date.now() < deadline) {
-      const tile = queue.shift();
-      if (tile) await fetchTile(tile);
-    }
-  }
-  await Promise.all(Array.from({ length: roadFetchConcurrency }, () => worker()));
+  await new Promise((resolve) => {
+    let active = 0;
+    const pump = () => {
+      while (active < roadFetchConcurrency && queue.length && Date.now() < deadline) {
+        const tile = queue.shift();
+        active++;
+        fetchTile(tile)
+          .catch((error) => {
+            incomplete = true;
+            console.error('OpenStreetMap tile processing failed', error?.message || error);
+          })
+          .finally(() => {
+            active--;
+            pump();
+          });
+      }
+      if (active === 0 && (!queue.length || Date.now() >= deadline)) resolve();
+    };
+    pump();
+  });
   if (queue.length || Date.now() >= deadline) incomplete = true;
   if (incomplete) console.warn('OpenStreetMap analysis returned partial coverage', { tileCount, queuedTiles: queue.length, roads: waysById.size });
   if (!waysById.size && incomplete) {

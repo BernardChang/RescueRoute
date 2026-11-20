@@ -32,17 +32,21 @@
   const editorStatus=document.getElementById('street-editor-status');
   const nodeName=document.getElementById('street-name');
   const nodeType=document.getElementById('street-type');
-  const screenshotInput=document.getElementById('map-screenshot');
-  let mapScreenshot=null;
   const customLayers={main:L.layerGroup().addTo(map),moto:L.layerGroup().addTo(map),foot:L.layerGroup().addTo(map)};
   const customMarkers=L.layerGroup().addTo(map);
   const markersByNodeId=new Map();
   const routeLayer=L.layerGroup().addTo(map);
   const areaSelectionLayer=L.layerGroup().addTo(map);
-  const normalizeGraph=(saved)=>({
-    nodes:Array.isArray(saved?.nodes)?saved.nodes:[],
-    edges:Array.isArray(saved?.edges)?saved.edges:Array.isArray(saved?.connectors)?saved.connectors:[]
-  });
+  let legacyImageGraphRemoved=false;
+  const normalizeGraph=(saved)=>{
+    const originalNodes=Array.isArray(saved?.nodes)?saved.nodes:[];
+    const originalEdges=Array.isArray(saved?.edges)?saved.edges:Array.isArray(saved?.connectors)?saved.connectors:[];
+    const nodes=originalNodes.filter((node)=>node?.source!=='map-image-ai'&&!String(node?.id||'').startsWith('image-node-'));
+    const nodeIds=new Set(nodes.map((node)=>node.id));
+    const edges=originalEdges.filter((edge)=>edge?.source!=='map-image-ai'&&!String(edge?.id||'').startsWith('image-edge-')&&nodeIds.has(edge?.from)&&nodeIds.has(edge?.to));
+    if(nodes.length!==originalNodes.length||edges.length!==originalEdges.length)legacyImageGraphRemoved=true;
+    return {nodes,edges};
+  };
   let graph={nodes:[],edges:[]};
   let editMode='';
   let edgeStart=null;
@@ -135,7 +139,8 @@
     }
     for(const node of graph.nodes){
       const routeClass=routeStartId===node.id?' is-route-start':routeEndId===node.id?' is-route-end':'';
-      const icon=L.divIcon({className:'',html:`<span class="custom-node-icon${edgeStart===node.id?' is-selected':''}${routeClass}">${safeText(node.name?.slice(0,1)||'•')}</span>`,iconSize:[24,24],iconAnchor:[12,12]});
+      const markerLabel=node.kind==='intersection'?'×':safeText(node.name?.slice(0,1)||'•');
+      const icon=L.divIcon({className:'',html:`<span class="custom-node-icon${edgeStart===node.id?' is-selected':''}${routeClass}">${markerLabel}</span>`,iconSize:[24,24],iconAnchor:[12,12]});
       const marker=L.marker([node.lat,node.lng],{icon,draggable:true}).addTo(customMarkers);
       markersByNodeId.set(node.id,marker);
       marker.on('dragend',()=>{const point=marker.getLatLng();node.lat=point.lat;node.lng=point.lng;routeLayer.clearLayers();document.getElementById('route-result').hidden=true;renderGraph();persistGraph();});
@@ -162,43 +167,10 @@
     for(const [type,layer] of Object.entries(customLayers)){const input=document.querySelector(`[data-layer="${type}"]`);if(input?.checked)layer.addTo(map);}
   }
   function clearAreaSelection(){areaPoints=[];areaSelectionLayer.clearLayers();document.getElementById('analyze-map-area').disabled=true;document.getElementById('cancel-map-area').hidden=true;map.doubleClickZoom.enable();}
-  async function captureSelectedMapArea(){
-    const points=areaPoints.map((point)=>map.latLngToContainerPoint(point));
-    const mapSize=map.getSize();
-    let left=Math.max(0,Math.floor(Math.min(...points.map((point)=>point.x))));
-    let top=Math.max(0,Math.floor(Math.min(...points.map((point)=>point.y))));
-    let right=Math.min(mapSize.x,Math.ceil(Math.max(...points.map((point)=>point.x))));
-    let bottom=Math.min(mapSize.y,Math.ceil(Math.max(...points.map((point)=>point.y))));
-    const expand=(start,end,limit)=>{let a=start,b=end;if(b-a<220){const center=(a+b)/2;a=Math.max(0,Math.floor(center-110));b=Math.min(limit,a+220);a=Math.max(0,b-220);}return [a,b];};
-    [left,right]=expand(left,right,mapSize.x);[top,bottom]=expand(top,bottom,mapSize.y);
-    const width=right-left,height=bottom-top;
-    if(width<48||height<48)throw new Error('The map view is too small to capture a readable fallback image. Zoom in and retry.');
-    const maxDimension=760,scale=Math.min(1,maxDimension/Math.max(width,height));
-    const canvas=document.createElement('canvas');canvas.width=Math.max(1,Math.round(width*scale));canvas.height=Math.max(1,Math.round(height*scale));
-    const context=canvas.getContext('2d');if(!context)throw new Error('The map image could not be prepared for AI analysis.');
-    context.fillStyle='#fff';context.fillRect(0,0,canvas.width,canvas.height);
-    const mapRect=map.getContainer().getBoundingClientRect();
-    for(const image of tileLayer.getContainer().querySelectorAll('img.leaflet-tile-loaded')){
-      if(!image.complete||!image.naturalWidth)continue;
-      const rect=image.getBoundingClientRect();
-      const x=rect.left-mapRect.left-left,y=rect.top-mapRect.top-top;
-      if(x>=width||y>=height||x+rect.width<=0||y+rect.height<=0)continue;
-      context.drawImage(image,x*scale,y*scale,rect.width*scale,rect.height*scale);
-    }
-    let blob;
-    for(const quality of [.72,.56,.4]){
-      blob=await new Promise((resolve,reject)=>canvas.toBlob((value)=>value?resolve(value):reject(new Error('The selected map image could not be encoded.')),'image/jpeg',quality));
-      if(blob.size<=256*1024)break;
-    }
-    if(blob.size>256*1024)throw new Error('The selected map image is too detailed. Zoom in and select the area again.');
-    const northWest=map.containerPointToLatLng([left,top]),southEast=map.containerPointToLatLng([right,bottom]);
-    return {blob,bounds:{north:northWest.lat,south:southEast.lat,west:northWest.lng,east:southEast.lng}};
-  }
-  screenshotInput.addEventListener('change',()=>{mapScreenshot=screenshotInput.files?.[0]||null;document.getElementById('map-screenshot-name').textContent=mapScreenshot?mapScreenshot.name:'Optional screenshot';if(mapScreenshot&&mapScreenshot.size>4*1024*1024){mapScreenshot=null;screenshotInput.value='';document.getElementById('map-screenshot-name').textContent='Optional screenshot';editorStatus.textContent='Choose a screenshot smaller than 4 MB.';}});
   function paintAreaSelection(){areaSelectionLayer.clearLayers();if(!areaPoints.length)return;if(areaPoints.length===1)L.circleMarker(areaPoints[0],{radius:6,color:'#2865d7',fillColor:'#fff',fillOpacity:1,weight:3}).addTo(areaSelectionLayer);else if(areaPoints.length===2)L.polyline(areaPoints,{color:'#2865d7',weight:3,dashArray:'7 5'}).addTo(areaSelectionLayer);else L.polygon(areaPoints,{color:'#2865d7',weight:3,dashArray:'7 5',fillColor:'#5890eb',fillOpacity:.12}).addTo(areaSelectionLayer);for(const point of areaPoints)L.circleMarker(point,{radius:4,color:'#2865d7',fillColor:'#fff',fillOpacity:1,weight:2}).addTo(areaSelectionLayer);}
-  function addAreaPoint(point){if(areaPoints.length>=20){editorStatus.textContent='Area boundary reached its 20-corner limit. Analyze this area or cancel it.';return;}areaPoints.push(point);paintAreaSelection();updateModeButtons();editorStatus.textContent=`Area outline: ${areaPoints.length} ${areaPoints.length===1?'corner':'corners'}. Add corners, then analyze with AI.`;}
+  function addAreaPoint(point){if(areaPoints.length>=20){editorStatus.textContent='Area boundary reached its 20-corner limit. Analyze this area or cancel it.';return;}areaPoints.push(point);paintAreaSelection();updateModeButtons();editorStatus.textContent=`Area outline: ${areaPoints.length} ${areaPoints.length===1?'corner':'corners'}. Add corners, then find OpenStreetMap crossings.`;}
   function updateModeButtons(){for(const [id,mode] of modeButtons)document.getElementById(id).classList.toggle('active',editMode===mode);document.getElementById('city-map').style.cursor=['add','area'].includes(editMode)?'crosshair':'';document.getElementById('analyze-map-area').disabled=editMode!=='area'||areaPoints.length<3||areaBusy;document.getElementById('cancel-map-area').hidden=editMode!=='area';}
-  modeButtons.forEach(([id,mode])=>document.getElementById(id).addEventListener('click',()=>{if(areaBusy)return;const wasSelectingArea=editMode==='area';editMode=editMode===mode?'':mode;edgeStart=null;if(mode==='area'&&editMode==='area'){areaPoints=[];areaSelectionLayer.clearLayers();map.doubleClickZoom.disable();editorStatus.textContent='Click at least three corners around a small street area, then choose Analyze area with AI.';}else if(wasSelectingArea){clearAreaSelection();editorStatus.textContent=mode==='area'?'Area selection cancelled.':editMode==='add'?'Click the map to place an intersection node.':editMode==='edge'?'Select two nodes to create an edge between them.':'Editor ready. Add nodes, edges, or select an area.';}else editorStatus.textContent=editMode==='add'?'Click the map to place an intersection node.':editMode==='edge'?'Select two nodes to create an edge between them.':'Editor ready. Add nodes, edges, or select an area.';updateModeButtons();renderGraph();}));
+  modeButtons.forEach(([id,mode])=>document.getElementById(id).addEventListener('click',()=>{if(areaBusy)return;const wasSelectingArea=editMode==='area';editMode=editMode===mode?'':mode;edgeStart=null;if(mode==='area'&&editMode==='area'){areaPoints=[];areaSelectionLayer.clearLayers();map.doubleClickZoom.disable();editorStatus.textContent='Click at least three corners around the street area, then find OSM crossings.';}else if(wasSelectingArea){clearAreaSelection();editorStatus.textContent=mode==='area'?'Area selection cancelled.':editMode==='add'?'Click the map to place an intersection node.':editMode==='edge'?'Select two nodes to create an edge between them.':'Editor ready. Add nodes, edges, or select an area.';}else editorStatus.textContent=editMode==='add'?'Click the map to place an intersection node.':editMode==='edge'?'Select two nodes to create an edge between them.':'Editor ready. Add nodes, edges, or select an area.';updateModeButtons();renderGraph();}));
   document.getElementById('cancel-map-area').addEventListener('click',()=>{if(areaBusy)return;editMode='';clearAreaSelection();updateModeButtons();editorStatus.textContent='Area selection cancelled.';});
   document.getElementById('stop-street-edit').addEventListener('click',()=>{if(areaBusy)return;editMode='';edgeStart=null;clearAreaSelection();updateModeButtons();editorStatus.textContent='Editor ready. Hover a node to set route endpoints.';renderGraph();});
   map.on('click',(event)=>{if(areaBusy)return;if(editMode==='area'){addAreaPoint(event.latlng);return;}if(editMode!=='add')return;graph.nodes.push({id:crypto.randomUUID(),name:nodeName.value.trim()||`Node ${graph.nodes.length+1}`,lat:event.latlng.lat,lng:event.latlng.lng,weight:0});editMode='';routeLayer.clearLayers();document.getElementById('route-result').hidden=true;updateModeButtons();renderGraph();persistGraph();});
@@ -206,21 +178,17 @@
     if(areaBusy||areaPoints.length<3)return;
     const user=cloudClient?.auth.currentUser;
     if(!user){editorStatus.textContent='Sign in before asking AI to analyze a map area.';return;}
-    areaBusy=true;updateModeButtons();editorStatus.textContent='Preparing the selected map and checking OpenStreetMap road data…';
+    areaBusy=true;updateModeButtons();editorStatus.textContent='Loading OpenStreetMap roads and finding actual crossings…';
     try{
-      const token=await user.getIdToken();const form=new FormData();
-      form.append('polygon',JSON.stringify(areaPoints.map((point)=>[point.lat,point.lng])));
-      if(mapScreenshot)form.append('image',mapScreenshot);
-      try{const captured=await captureSelectedMapArea();form.append('mapPreview',captured.blob,'selected-map-area.jpg');form.append('mapPreviewBounds',JSON.stringify(captured.bounds));}
-      catch(error){console.warn('Could not capture the selected map preview; road-data analysis will continue.',error);}
-      const response=await fetch('/api/map/analyze-area',{method:'POST',headers:{Authorization:`Bearer ${token}`},body:form});
-      const result=await response.json().catch(()=>({}));if(!response.ok)throw new Error(result.error||'AI map analysis could not complete.');
+      const token=await user.getIdToken();
+      const response=await fetch('/api/map/analyze-area',{method:'POST',headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body:JSON.stringify({polygon:areaPoints.map((point)=>[point.lat,point.lng])})});
+      const result=await response.json().catch(()=>({}));if(!response.ok)throw new Error(result.error||'OpenStreetMap graph creation could not complete.');
       const knownNodes=new Set(graph.nodes.map((node)=>node.id));const knownEdges=new Set(graph.edges.map((edge)=>edge.id));
       const newNodes=(result.nodes||[]).filter((node)=>!knownNodes.has(node.id));const newEdges=(result.edges||[]).filter((edge)=>!knownEdges.has(edge.id));
       if(graph.nodes.length+newNodes.length>2000||graph.edges.length+newEdges.length>4000)throw new Error('This graph is near its save limit. Select a smaller area or clear unused nodes and edges.');
       graph.nodes.push(...newNodes);graph.edges.push(...newEdges);editMode='';clearAreaSelection();routeLayer.clearLayers();document.getElementById('route-result').hidden=true;updateModeButtons();renderGraph();persistGraph();
-      editorStatus.textContent=`${result.summary||'AI street analysis complete.'} Added ${newNodes.length} new nodes and ${newEdges.length} new edges.`;
-    }catch(error){editorStatus.textContent=error.message||'AI map analysis failed. Please retry.';}
+      editorStatus.textContent=`${result.summary||'OpenStreetMap street analysis complete.'} Added ${newNodes.length} new nodes and ${newEdges.length} new edges.`;
+    }catch(error){editorStatus.textContent=error.message||'OpenStreetMap graph creation failed. Please retry.';}
     finally{areaBusy=false;updateModeButtons();}
   });
   document.getElementById('clear-street-map').addEventListener('click',()=>{if(!graph.nodes.length&&!graph.edges.length){editorStatus.textContent='There are no custom nodes or edges to clear.';return;}if(!window.confirm('Delete all nodes and edges saved in this browser?'))return;graph={nodes:[],edges:[]};routeStartId=null;routeEndId=null;saveRouteSelection();routeLayer.clearLayers();renderGraph();persistGraph();updateRouteSelectionStatus();});
@@ -295,7 +263,7 @@
     status.textContent='Finding your location…';
     navigator.geolocation.getCurrentPosition((position)=>{map.setView([position.coords.latitude,position.coords.longitude],15);document.getElementById('map-location-label').textContent='YOUR LOCATION';status.textContent='Map centred on your location. The sample overlays aren’t verified nearby roads.';},()=>{status.textContent='Location access was unavailable. Search for a city instead.';},{timeout:10000,maximumAge:60000});
   });
-  import('./firebase-client.js').then((client)=>{cloudClient=client;client.onAuthStateChanged(client.auth,(user)=>{stopCloudSync?.();stopCloudSync=null;cloudSyncReady=false;editorStatus.textContent=user?'Loading the shared Manila street graph from Firebase…':'Loading the shared Manila street graph…';stopCloudSync=client.onSnapshot(client.doc(client.db,'cityMaps','manila'),async(snapshot)=>{const version=++mapSnapshotVersion;const remote=snapshot.exists()?snapshot.data():null;try{if(remote?.format==='chunked-v1'){cloudChunkCounts={nodes:Number(remote.nodeChunks)||0,edges:Number(remote.edgeChunks)||0};const chunksSnapshot=await client.getDocs(client.collection(client.doc(client.db,'cityMaps','manila'),'chunks'));if(version!==mapSnapshotVersion)return;const pieces={nodes:[],edges:[]};chunksSnapshot.forEach((chunkDoc)=>{const chunk=chunkDoc.data();if((chunk.kind==='nodes'||chunk.kind==='edges')&&Array.isArray(chunk.items))pieces[chunk.kind].push([chunkDoc.id,chunk.items]);});for(const kind of ['nodes','edges']){pieces[kind].sort((a,b)=>Number(a[0].split('_')[1])-Number(b[0].split('_')[1]));const expected=cloudChunkCounts[kind];if(pieces[kind].length!==expected)throw new Error(`Firebase map data is incomplete (${kind} chunks: ${pieces[kind].length}/${expected}).`);}graph={nodes:pieces.nodes.flatMap((chunk)=>chunk[1]),edges:pieces.edges.flatMap((chunk)=>chunk[1])};}else{const remoteEdges=Array.isArray(remote?.edges)?remote.edges:remote?.connectors;if(remote&&Array.isArray(remote.nodes)&&Array.isArray(remoteEdges)){graph={nodes:remote.nodes,edges:remoteEdges};cloudChunkCounts={nodes:0,edges:0};}else{cloudSyncReady=true;if(graph.nodes.length||graph.edges.length){if(user)persistGraph();else editorStatus.textContent='No shared map exists yet. Sign in before saving the first shared nodes and edges.';}else editorStatus.textContent=user?'Connected to Firebase. Add nodes and edges to build the Manila street map.':'No shared map exists yet. Sign in to create the Manila street map.';return;}}if(version!==mapSnapshotVersion)return;routeLayer.clearLayers();try{localStorage.setItem(storageKey,JSON.stringify(graph));}catch{}renderGraph();updateRouteSelectionStatus();cloudSyncReady=true;editorStatus.textContent=user?`Synced to Firebase · ${graphSummary()}.`:`Loaded shared map from Firebase · ${graphSummary()}. Sign in to save edits for everyone.`;}catch(error){if(version!==mapSnapshotVersion)return;cloudSyncReady=false;console.error('Street map data could not be loaded',error);editorStatus.textContent=`Firebase map load failed (${error?.code||'data'}: ${error?.message||'could not read map chunks'}).`;}},(error)=>{cloudSyncReady=false;console.error('Street map sync could not start',error);editorStatus.textContent=`Firebase sync failed (${error?.code||'unknown'}: ${error?.message||'check Firestore access'}).`;});},(error)=>{console.error('Firebase authentication could not be checked for map sync',error);editorStatus.textContent='Could not check sign-in. Street changes are saved in this browser.';});}).catch((error)=>{console.error('Firebase map sync could not load',error);editorStatus.textContent=`Firebase map sync could not load (${error?.code||'unknown'}: ${error?.message||'check Firebase configuration'}).`;});
+  import('./firebase-client.js').then((client)=>{cloudClient=client;client.onAuthStateChanged(client.auth,(user)=>{stopCloudSync?.();stopCloudSync=null;cloudSyncReady=false;editorStatus.textContent=user?'Loading the shared Manila street graph from Firebase…':'Loading the shared Manila street graph…';stopCloudSync=client.onSnapshot(client.doc(client.db,'cityMaps','manila'),async(snapshot)=>{const version=++mapSnapshotVersion;const remote=snapshot.exists()?snapshot.data():null;try{if(remote?.format==='chunked-v1'){cloudChunkCounts={nodes:Number(remote.nodeChunks)||0,edges:Number(remote.edgeChunks)||0};const chunksSnapshot=await client.getDocs(client.collection(client.doc(client.db,'cityMaps','manila'),'chunks'));if(version!==mapSnapshotVersion)return;const pieces={nodes:[],edges:[]};chunksSnapshot.forEach((chunkDoc)=>{const chunk=chunkDoc.data();if((chunk.kind==='nodes'||chunk.kind==='edges')&&Array.isArray(chunk.items))pieces[chunk.kind].push([chunkDoc.id,chunk.items]);});for(const kind of ['nodes','edges']){pieces[kind].sort((a,b)=>Number(a[0].split('_')[1])-Number(b[0].split('_')[1]));const expected=cloudChunkCounts[kind];if(pieces[kind].length!==expected)throw new Error(`Firebase map data is incomplete (${kind} chunks: ${pieces[kind].length}/${expected}).`);}graph=normalizeGraph({nodes:pieces.nodes.flatMap((chunk)=>chunk[1]),edges:pieces.edges.flatMap((chunk)=>chunk[1])});}else{const remoteEdges=Array.isArray(remote?.edges)?remote.edges:remote?.connectors;if(remote&&Array.isArray(remote.nodes)&&Array.isArray(remoteEdges)){graph=normalizeGraph({nodes:remote.nodes,edges:remoteEdges});cloudChunkCounts={nodes:0,edges:0};}else{cloudSyncReady=true;if(graph.nodes.length||graph.edges.length){if(user)persistGraph();else editorStatus.textContent='No shared map exists yet. Sign in before saving the first shared nodes and edges.';}else editorStatus.textContent=user?'Connected to Firebase. Add nodes and edges to build the Manila street map.':'No shared map exists yet. Sign in to create the Manila street map.';return;}}if(version!==mapSnapshotVersion)return;routeLayer.clearLayers();try{localStorage.setItem(storageKey,JSON.stringify(graph));}catch{}renderGraph();updateRouteSelectionStatus();cloudSyncReady=true;editorStatus.textContent=user?`Synced to Firebase · ${graphSummary()}.`:`Loaded shared map from Firebase · ${graphSummary()}. Sign in to save edits for everyone.`;if(user&&legacyImageGraphRemoved){legacyImageGraphRemoved=false;persistGraph();editorStatus.textContent='Removed the old screenshot-guessed graph. New auto-created roads now come directly from OpenStreetMap crossings.';}}catch(error){if(version!==mapSnapshotVersion)return;cloudSyncReady=false;console.error('Street map data could not be loaded',error);editorStatus.textContent=`Firebase map load failed (${error?.code||'data'}: ${error?.message||'could not read map chunks'}).`;}},(error)=>{cloudSyncReady=false;console.error('Street map sync could not start',error);editorStatus.textContent=`Firebase sync failed (${error?.code||'unknown'}: ${error?.message||'check Firestore access'}).`;});},(error)=>{console.error('Firebase authentication could not be checked for map sync',error);editorStatus.textContent='Could not check sign-in. Street changes are saved in this browser.';});}).catch((error)=>{console.error('Firebase map sync could not load',error);editorStatus.textContent=`Firebase map sync could not load (${error?.code||'unknown'}: ${error?.message||'check Firebase configuration'}).`;});
   function resizeMap(){if(!home.hidden)requestAnimationFrame(()=>map.invalidateSize());}
   const uploads=document.getElementById('uploads-page');
   function showPage(page,updateHash=false){

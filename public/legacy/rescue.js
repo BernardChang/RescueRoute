@@ -125,6 +125,16 @@
   const modeButtons=[['add-street-node','add'],['add-street-edge','edge'],['select-map-area','area']];
   const analyzeAreaButton=document.getElementById('analyze-map-area');
   const cancelAreaButton=document.getElementById('cancel-map-area');
+  const readableApiError=(payload,fallback)=>{
+    const error=payload?.error;
+    if(typeof error==='string'&&error.trim())return error;
+    if(error&&typeof error==='object'){
+      const message=error.message||error.error?.message||error.detail||error.code;
+      if(typeof message==='string'&&message.trim())return message;
+    }
+    if(typeof payload?.message==='string'&&payload.message.trim())return payload.message;
+    return fallback;
+  };
   function updateAreaSelection(){
     areaLayer.clearLayers();
     for(const point of areaPoints)L.circleMarker([point.lat,point.lng],{radius:6,color:'#fff',weight:2,fillColor:'#2865d7',fillOpacity:1,interactive:false}).addTo(areaLayer);
@@ -193,7 +203,7 @@
       const token=await user.getIdToken();
       const response=await fetch('/api/map/analyze-area',{method:'POST',headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json',Accept:'application/json'},body:JSON.stringify({polygon:areaPoints.map((point)=>[point.lat,point.lng])})});
       const result=await response.json().catch(()=>({}));
-      if(!response.ok)throw new Error(result.error||`Area analysis failed (HTTP ${response.status}).`);
+      if(!response.ok)throw new Error(readableApiError(result,`Area analysis failed (HTTP ${response.status}).`));
       if(!result.nodes?.length){editorStatus.textContent=result.summary||'No intersections were verified in this area.';clearAreaSelection();editMode='';map.doubleClickZoom.enable();updateModeButtons();return;}
       const previous=graph;
       const nodesById=new Map(graph.nodes.map((node)=>[node.id,node]));

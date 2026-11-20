@@ -1,10 +1,4 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "framework": "nextjs",
-  "functions": {
-    "app/api/map/analyze-area/route.js": {
-      "regions": ["sin1"],
-      "maxDuration": 240
-    }
-  }
+  "framework": "nextjs"
 }

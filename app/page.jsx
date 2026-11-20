@@ -14,7 +14,7 @@ export default async function HomePage() {
     <>
       <div dangerouslySetInnerHTML={{ __html: markup }} />
       <Script src="/legacy/app.js" strategy="afterInteractive" />
-      <Script src="/legacy/rescue.js" strategy="afterInteractive" />
+      <Script src="/legacy/rescue.js?v=osm-crossings-v2" strategy="afterInteractive" />
       <Script src="/legacy/uploads.js" type="module" strategy="afterInteractive" />
     </>
   );

@@ -4,6 +4,7 @@ export const maxDuration = 240;
 const maxPoints = 20;
 const maxWays = 500;
 const maxWayNodes = 12_000;
+const maxLegacyMultipartBytes = 4_500_000;
 const analysesPerHour = 12;
 const rateWindowMs = 60 * 60 * 1000;
 const analysisTimes = new Map();
@@ -369,11 +370,22 @@ export async function POST(request) {
 
   let body;
   const declaredLength = Number(request.headers.get('content-length') ?? 0);
-  if (declaredLength > 32_000) return jsonError('Map selection is too large. Draw a simpler area outline.', 413);
-  try {
-    body = await request.json();
-  } catch {
-    return jsonError('Choose a valid map area to analyze.', 400);
+  const contentType = request.headers.get('content-type')?.split(';')[0].trim().toLowerCase();
+  if (contentType === 'multipart/form-data') {
+    if (declaredLength > maxLegacyMultipartBytes) return jsonError('Map selection is too large. Draw a simpler area outline.', 413);
+    try {
+      const form = await request.formData();
+      body = { polygon: JSON.parse(String(form.get('polygon') ?? '')) };
+    } catch {
+      return jsonError('Choose a valid map area to analyze.', 400);
+    }
+  } else {
+    if (declaredLength > 32_000) return jsonError('Map selection is too large. Draw a simpler area outline.', 413);
+    try {
+      body = await request.json();
+    } catch {
+      return jsonError('Choose a valid map area to analyze.', 400);
+    }
   }
   const polygon = validatePolygon(body?.polygon);
   if (!polygon) return jsonError('Draw a smaller area with at least three corners.', 400);

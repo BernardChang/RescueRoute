@@ -14,7 +14,7 @@ export default async function HomePage() {
     <>
       <div dangerouslySetInnerHTML={{ __html: markup }} />
       <Script src="/legacy/app.js" strategy="afterInteractive" />
-      <Script src="/legacy/rescue.js?v=map-upload-delegation-v1" strategy="afterInteractive" />
+      <Script src="/legacy/rescue.js?v=firebase-safe-geometry-v1" strategy="afterInteractive" />
       <Script src="/legacy/uploads.js?v=map-photo-assessment-v1" type="module" strategy="afterInteractive" />
     </>
   );

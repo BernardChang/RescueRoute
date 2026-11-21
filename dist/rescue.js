@@ -39,12 +39,19 @@
   let areaAnalysisBusy=false;
   const markersByNodeId=new Map();
   const routeLayer=L.layerGroup().addTo(map);
+  const restoreEdgeGeometry=(edge)=>{
+    if(edge?._rrPointEncoding!=='flat-latlng-v1'||!Array.isArray(edge.points))return edge;
+    const points=[];
+    for(let index=0;index+1<edge.points.length;index+=2)points.push([Number(edge.points[index]),Number(edge.points[index+1])]);
+    const {_rrPointEncoding,...rest}=edge;
+    return {...rest,points};
+  };
   const normalizeGraph=(saved)=>{
     const originalNodes=Array.isArray(saved?.nodes)?saved.nodes:[];
     const originalEdges=Array.isArray(saved?.edges)?saved.edges:Array.isArray(saved?.connectors)?saved.connectors:[];
     const nodes=originalNodes;
     const nodeIds=new Set(nodes.map((node)=>node.id));
-    const edges=originalEdges.filter((edge)=>nodeIds.has(edge?.from)&&nodeIds.has(edge?.to));
+    const edges=originalEdges.filter((edge)=>nodeIds.has(edge?.from)&&nodeIds.has(edge?.to)).map(restoreEdgeGeometry);
     return {nodes,edges};
   };
   let graph={nodes:[],edges:[]};
@@ -164,7 +171,10 @@
     catch{editorStatus.textContent='Could not save this map in this browser.';return Promise.resolve(false);}
     if(!cloudClient?.auth.currentUser){editorStatus.textContent=`Saved on this device · ${graphSummary()}. Sign in to sync across devices.`;return Promise.resolve(false);}
     if(!cloudSyncReady){editorStatus.textContent='Connecting to Firebase…';return Promise.resolve(false);}
-    const copy={nodes:graph.nodes,edges:graph.edges};
+    const copy={nodes:graph.nodes,edges:graph.edges.map((edge)=>{
+      if(!Array.isArray(edge.points)||!edge.points.some(Array.isArray))return edge;
+      return {...edge,points:edge.points.flat(Infinity),_rrPointEncoding:'flat-latlng-v1'};
+    })};
     cloudWriteQueue=cloudWriteQueue.catch(()=>{}).then(async()=>{
       const itemChunks=(items)=>{const chunks=[];let current=[];let bytes=2;for(const item of items){const itemBytes=new TextEncoder().encode(JSON.stringify(item)).length+1;if(itemBytes>300000)throw new Error('A single map item is too large to save.');if(current.length&&bytes+itemBytes>300000){chunks.push(current);current=[];bytes=2;}current.push(item);bytes+=itemBytes;}if(current.length)chunks.push(current);return chunks;};
       const nodeChunks=itemChunks(copy.nodes),edgeChunks=itemChunks(copy.edges);const generation=crypto.randomUUID();

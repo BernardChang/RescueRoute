@@ -21,7 +21,7 @@
   }).addTo(map);
   L.control.zoom({ position: 'bottomright' }).addTo(map);
   L.control.scale({ imperial: false, position: 'bottomleft' }).addTo(map);
-  const colors = {main:'#2563eb',moto:'#dc2626',foot:'#16a34a',unmarked:'#f59e0b'};
+  const colors = {main:'#2563eb',moto:'#dc2626',foot:'#16a34a',unmarked:'#f59e0b',blocked:'#64748b'};
   const layers = {main:L.layerGroup().addTo(map),moto:L.layerGroup().addTo(map),foot:L.layerGroup().addTo(map)};
   const samples = {
     main:{name:'Main road',text:'Illustrative all-vehicle corridor. Verify current restrictions before travel.',points:[[14.6092,120.9732],[14.6054,120.9792],[14.6018,120.9852],[14.5975,120.9921],[14.5928,120.9984],[14.5859,121.0045]]},
@@ -55,6 +55,7 @@
     return {nodes,edges};
   };
   let graph={nodes:[],edges:[]};
+  let selected='car';
   let editMode='';
   let edgeStart=null;
   let routeStartId=null;
@@ -73,16 +74,20 @@
   const graphSummary=()=>`${graph.nodes.length} nodes · ${graph.edges.length} ${graph.edges.length===1?'edge':'edges'}`;
   const normalizeWeight=(value)=>Math.max(0,Math.min(10,Math.round(Number(value)||0)));
   const weightScore=(item)=>normalizeWeight(item?.weight);
-  const accessLevelLabel=(level)=>({vehicle_accessible:'Vehicle accessible',motorcycle_only:'Motorcycle access only',pedestrian_only:'Foot access only',blocked:'Blocked to vehicles and pedestrians',uncertain:'Access uncertain'})[level]||'Not photo assessed';
-  const photoAccessMarkup=(item)=>{const access=item?.photoAccess;if(!access)return '';const hazards=access.hazards||{};const findings=[['Stairs',hazards.stairs],['Stalls',hazards.stalls],['Parked vehicles',hazards.parkedVehicles],['Low wires',hazards.lowHangingWires],['Dead end',hazards.deadEnd]].filter(([,visible])=>visible).map(([label])=>label);const width=Number.isFinite(access.estimatedClearWidthMeters)?`<small>Estimated clear width: ${access.estimatedClearWidthMeters.toFixed(1)} m (${safeText(access.widthEstimateConfidence||'unrated')} confidence)</small>`:'';return `<div class="photo-access-summary"><strong>Photo access: ${safeText(accessLevelLabel(access.accessLevel))}</strong><small>Car: ${access.canVehiclesPass?'yes':'no'} · Motorcycle: ${access.canMotorcyclesPass?'yes':'no'} · Foot: ${access.canPedestriansPass?'yes':'no'}</small>${width}${findings.length?`<small>Visible: ${safeText(findings.join(', '))}</small>`:''}${access.photoName?`<small>Evidence photo: ${safeText(access.photoName)}</small>`:''}</div>`;};
+  const accessLevelLabel=(level)=>({vehicle_accessible:'Vehicle accessible',motorcycle_only:'Motorcycle access only',pedestrian_only:'Foot access only',blocked:'All travel modes blocked',uncertain:'Access uncertain'})[level]||'Not photo assessed';
+  const accessFlag=(access,mode)=>mode==='car'?access?.canVehiclesPass:mode==='motorcycle'?access?.canMotorcyclesPass:access?.canPedestriansPass;
+  const accessLevelAllows=(level,mode)=>{if(level==='blocked')return false;if(level==='vehicle_accessible'||level==='uncertain')return true;if(level==='motorcycle_only')return mode!=='car';if(level==='pedestrian_only')return mode==='foot';return undefined;};
+  const photoAccessAllows=(item,mode=selected)=>{const access=item?.photoAccess;if(!access)return true;const flag=accessFlag(access,mode);const levelAllows=accessLevelAllows(access.accessLevel,mode);return flag!==false&&levelAllows!==false;};
+  const photoAccessValue=(item,mode)=>{if(!item?.photoAccess)return null;return photoAccessAllows(item,mode);};
+  const photoAccessRoadRank=(item)=>{if(!item?.photoAccess)return null;return photoAccessAllows(item,'car')?3:photoAccessAllows(item,'motorcycle')?2:photoAccessAllows(item,'foot')?1:0;};
+  const photoRoadType=(edge,from,to)=>{const declared=edge.type||'main';const rank={main:3,moto:2,foot:1};const declaredRank=rank[declared];if(declaredRank===undefined)return declared;const assessmentRanks=[edge,from,to].map(photoAccessRoadRank).filter((value)=>value!==null);const effectiveRank=Math.min(declaredRank,...assessmentRanks);return effectiveRank===0?'blocked':effectiveRank===1?'foot':effectiveRank===2?'moto':'main';};
+  const photoAccessMarkup=(item)=>{const access=item?.photoAccess;if(!access)return '';const hazards=access.hazards||{};const findings=[['Stairs',hazards.stairs],['Stalls',hazards.stalls],['Parked vehicles',hazards.parkedVehicles],['Low wires',hazards.lowHangingWires],['Dead end',hazards.deadEnd]].filter(([,visible])=>visible).map(([label])=>label);const width=Number.isFinite(access.estimatedClearWidthMeters)?`<small>Estimated clear width: ${access.estimatedClearWidthMeters.toFixed(1)} m (${safeText(access.widthEstimateConfidence||'unrated')} confidence)</small>`:'';const value=(mode)=>photoAccessValue(item,mode);const label=(mode)=>value(mode)===null?'unknown':value(mode)?'yes':'blocked';return `<div class="photo-access-summary"><strong>Photo access: ${safeText(accessLevelLabel(access.accessLevel))}</strong><small>Car: ${label('car')} · Motorcycle: ${label('motorcycle')} · Foot: ${label('foot')}</small>${width}${findings.length?`<small>Visible: ${safeText(findings.join(', '))}</small>`:''}${access.photoName?`<small>Evidence photo: ${safeText(access.photoName)}</small>`:''}</div>`;};
   const nodeRoadStatusMarkup=(node,weight=weightScore(node))=>{
-    const access=node?.photoAccess;
     const score=normalizeWeight(weight);
-    const modes=[['Car',access?.canVehiclesPass],['Motorcycle',access?.canMotorcyclesPass],['Foot',access?.canPedestriansPass]];
+    const modes=[['Car',photoAccessValue(node,'car')],['Motorcycle',photoAccessValue(node,'motorcycle')],['Foot',photoAccessValue(node,'foot')]];
     const status=(canPass)=>canPass===false?['Blocked','is-blocked']:score>0?['Impeded','is-impeded']:canPass===true?['Clear','is-clear']:['Not assessed','is-unknown'];
     return `<div class="node-road-status" data-node-road-status role="list" aria-label="Travel access and impediment status">${modes.map(([mode,canPass])=>{const [label,className]=status(canPass);return `<span class="node-road-chip ${className}" role="listitem"><strong>${mode}</strong><span>${label}</span></span>`;}).join('')}</div>`;
   };
-  const photoAccessAllows=(item)=>{const access=item?.photoAccess;if(!access)return true;if(selected==='car')return access.canVehiclesPass!==false;if(selected==='motorcycle')return access.canMotorcyclesPass!==false;return access.canPedestriansPass!==false;};
   const distanceMeters=(a,b)=>{const radius=6371000,toRadians=(value)=>value*Math.PI/180;const dLat=toRadians(b.lat-a.lat),dLng=toRadians(b.lng-a.lng);const s=Math.sin(dLat/2)**2+Math.cos(toRadians(a.lat))*Math.cos(toRadians(b.lat))*Math.sin(dLng/2)**2;return radius*2*Math.atan2(Math.sqrt(s),Math.sqrt(1-s));};
   const edgePoints=(edge,from,to)=>{const points=Array.isArray(edge.points)&&edge.points.length>1?edge.points.map((point)=>[Number(point[0]),Number(point[1])]):[[from.lat,from.lng],[to.lat,to.lng]];if(edge.from!==from.id)points.reverse();points[0]=[from.lat,from.lng];points[points.length-1]=[to.lat,to.lng];return points;};
   const edgeLength=(edge,from,to)=>{const points=edgePoints(edge,from,to);let distance=0;for(let i=1;i<points.length;i++)distance+=distanceMeters({lat:points[i-1][0],lng:points[i-1][1]},{lat:points[i][0],lng:points[i][1]});return distance;};
@@ -306,7 +311,7 @@
       const from=graph.nodes.find((node)=>node.id===edge.from);
       const to=graph.nodes.find((node)=>node.id===edge.to);
       if(!from||!to)continue;
-      const line=L.polyline(edgePoints(edge,from,to),{color:colors[edge.type]||colors.unmarked,weight:6,opacity:.95,lineCap:'round',lineJoin:'round'}).addTo(customLayers[edge.type]||customLayers.main);
+      const effectiveType=[edge,from,to].some((item)=>!photoAccessAllows(item))?'blocked':photoRoadType(edge,from,to);const line=L.polyline(edgePoints(edge,from,to),{color:colors[effectiveType]||colors.unmarked,weight:6,opacity:.95,lineCap:'round',lineJoin:'round'}).addTo(customLayers[edge.type]||customLayers.main);
       line.bindPopup(`<div class="street-popup"><strong>${safeText(edge.name||'Street edge')}</strong><br>${safeText(from.name||'Node')} ↔ ${safeText(to.name||'Node')}${photoAccessMarkup(edge)}<div class="weight-editor"><label>Impediment weight <span><output data-edge-weight-value>${weightScore(edge)}</output>/10</span><input type="range" data-edge-weight min="0" max="10" step="1" value="${weightScore(edge)}"></label><small>0 = clear · 10 = heavily impeded</small></div><div class="weight-photo-control"><label>📷 Upload road photo to assess access and weight<input type="file" data-weight-photo data-weight-photo-target-type="edge" data-weight-photo-target-id="${safeText(edge.id)}" accept="image/jpeg,image/png,image/webp" capture="environment" hidden></label><small data-weight-photo-status>Review the AI result on Photo uploads, then apply it to this edge.</small></div><button type="button" data-delete-edge="${safeText(edge.id)}">Delete edge</button></div>`);
       line.on('popupopen',(event)=>{const popup=event.popup.getElement();const weightInput=popup.querySelector('[data-edge-weight]');weightInput.oninput=()=>{popup.querySelector('[data-edge-weight-value]').value=weightInput.value;popup.querySelector('[data-edge-weight-value]').textContent=weightInput.value;};weightInput.onchange=()=>{edge.weight=normalizeWeight(weightInput.value);persistGraph().then(refreshRouteIfReady);};const button=popup.querySelector('[data-delete-edge]');if(button)button.onclick=()=>{graph.edges=graph.edges.filter((item)=>item.id!==edge.id);routeLayer.clearLayers();document.getElementById('route-result').hidden=true;renderGraph();persistGraph().then(refreshRouteIfReady);map.closePopup();};});
     }
@@ -391,13 +396,14 @@
     checkboxes.forEach((item)=>{item.checked=show;item.dispatchEvent(new Event('change'));});
     event.currentTarget.textContent=show?'Hide all':'Show all';
   });
-  const modes=[...document.querySelectorAll('[data-mode]')];let selected='car';
+  const modes=[...document.querySelectorAll('[data-mode]')];
   modes.forEach((button)=>button.addEventListener('click',()=>{
     selected=button.dataset.mode;
     modes.forEach((item)=>{const active=item===button;item.classList.toggle('selected',active);item.setAttribute('aria-pressed',String(active));});
     const allowed=selected==='car'?['main']:selected==='motorcycle'?['main','moto']:['main','moto','foot'];
     checkboxes.forEach((input)=>{const on=allowed.includes(input.dataset.layer);input.checked=on;input.dispatchEvent(new Event('change'));});
     document.getElementById('toggle-all').textContent=allowed.length===3?'Hide all':'Show all';
+    renderGraph();
     if(!refreshRouteIfReady()){routeLayer.clearLayers();document.getElementById('route-result').hidden=true;}
   }));
   document.getElementById('show-route').addEventListener('click',()=>{

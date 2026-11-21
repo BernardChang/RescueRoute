@@ -14,8 +14,8 @@ export default async function HomePage() {
     <>
       <div dangerouslySetInnerHTML={{ __html: markup }} />
       <Script src="/legacy/app.js" strategy="afterInteractive" />
-      <Script src="/legacy/rescue.js?v=node-popup-ui-v1" strategy="afterInteractive" />
-      <Script src="/legacy/uploads.js?v=map-photo-assessment-v1" type="module" strategy="afterInteractive" />
+      <Script src="/legacy/rescue.js?v=unlabeled-nodes-road-colors-v1" strategy="afterInteractive" />
+      <Script src="/legacy/uploads.js?v=routing-bottlenecks-v1" type="module" strategy="afterInteractive" />
     </>
   );
 }

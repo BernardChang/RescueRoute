@@ -13,7 +13,7 @@ export default function RootLayout({ children }) {
         <meta name="rescue-map-tile-url" content="https://tile.openstreetmap.org/{z}/{x}/{y}.png" />
         <link rel="stylesheet" href="/legacy/styles.css" />
         <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossOrigin="" />
-        <link rel="stylesheet" href="/legacy/rescue.css?v=node-popup-ui-v1" />
+        <link rel="stylesheet" href="/legacy/rescue.css?v=unlabeled-nodes-road-colors-v1" />
         <Script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" strategy="beforeInteractive" crossOrigin="" />
       </head>
       <body>{children}</body>

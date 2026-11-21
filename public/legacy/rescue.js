@@ -21,7 +21,7 @@
   }).addTo(map);
   L.control.zoom({ position: 'bottomright' }).addTo(map);
   L.control.scale({ imperial: false, position: 'bottomleft' }).addTo(map);
-  const colors = {main:'#dc8047',moto:'#8764bb',foot:'#398eae'};
+  const colors = {main:'#2563eb',moto:'#dc2626',foot:'#16a34a',unmarked:'#f59e0b'};
   const layers = {main:L.layerGroup().addTo(map),moto:L.layerGroup().addTo(map),foot:L.layerGroup().addTo(map)};
   const samples = {
     main:{name:'Main road',text:'Illustrative all-vehicle corridor. Verify current restrictions before travel.',points:[[14.6092,120.9732],[14.6054,120.9792],[14.6018,120.9852],[14.5975,120.9921],[14.5928,120.9984],[14.5859,121.0045]]},
@@ -74,7 +74,7 @@
   const normalizeWeight=(value)=>Math.max(0,Math.min(10,Math.round(Number(value)||0)));
   const weightScore=(item)=>normalizeWeight(item?.weight);
   const accessLevelLabel=(level)=>({vehicle_accessible:'Vehicle accessible',motorcycle_only:'Motorcycle access only',pedestrian_only:'Foot access only',blocked:'Blocked to vehicles and pedestrians',uncertain:'Access uncertain'})[level]||'Not photo assessed';
-  const photoAccessMarkup=(item)=>{const access=item?.photoAccess;if(!access)return '';const hazards=access.hazards||{};const findings=[['Stairs',hazards.stairs],['Stalls',hazards.stalls],['Parked vehicles',hazards.parkedVehicles],['Low wires',hazards.lowHangingWires],['Dead end',hazards.deadEnd]].filter(([,visible])=>visible).map(([label])=>label);return `<div class="photo-access-summary"><strong>Photo access: ${safeText(accessLevelLabel(access.accessLevel))}</strong><small>Car: ${access.canVehiclesPass?'yes':'no'} · Motorcycle: ${access.canMotorcyclesPass?'yes':'no'} · Foot: ${access.canPedestriansPass?'yes':'no'}</small>${findings.length?`<small>Visible: ${safeText(findings.join(', '))}</small>`:''}${access.photoName?`<small>Evidence photo: ${safeText(access.photoName)}</small>`:''}</div>`;};
+  const photoAccessMarkup=(item)=>{const access=item?.photoAccess;if(!access)return '';const hazards=access.hazards||{};const findings=[['Stairs',hazards.stairs],['Stalls',hazards.stalls],['Parked vehicles',hazards.parkedVehicles],['Low wires',hazards.lowHangingWires],['Dead end',hazards.deadEnd]].filter(([,visible])=>visible).map(([label])=>label);const width=Number.isFinite(access.estimatedClearWidthMeters)?`<small>Estimated clear width: ${access.estimatedClearWidthMeters.toFixed(1)} m (${safeText(access.widthEstimateConfidence||'unrated')} confidence)</small>`:'';return `<div class="photo-access-summary"><strong>Photo access: ${safeText(accessLevelLabel(access.accessLevel))}</strong><small>Car: ${access.canVehiclesPass?'yes':'no'} · Motorcycle: ${access.canMotorcyclesPass?'yes':'no'} · Foot: ${access.canPedestriansPass?'yes':'no'}</small>${width}${findings.length?`<small>Visible: ${safeText(findings.join(', '))}</small>`:''}${access.photoName?`<small>Evidence photo: ${safeText(access.photoName)}</small>`:''}</div>`;};
   const nodeRoadStatusMarkup=(node,weight=weightScore(node))=>{
     const access=node?.photoAccess;
     const score=normalizeWeight(weight);
@@ -103,6 +103,7 @@
     renderGraph();
     updateRouteSelectionStatus();
     editorStatus.textContent=`${role==='start'?'Start':'End'} node set to ${node.name||'Map node'}.`;
+    refreshRouteIfReady();
   }
   async function deleteNode(nodeId){
     const node=graph.nodes.find((item)=>item.id===nodeId);
@@ -128,6 +129,7 @@
     renderGraph();
     updateRouteSelectionStatus();
     const saved=await persistGraph();
+    if(saved||!canSync)refreshRouteIfReady();
     if(!saved&&canSync){
       graph=previousGraph;
       routeStartId=previousStartId;
@@ -137,6 +139,7 @@
       try{localStorage.setItem(storageKey,JSON.stringify(graph));}catch{}
       renderGraph();
       updateRouteSelectionStatus();
+      refreshRouteIfReady();
       const reason=editorStatus.textContent;
       editorStatus.textContent=reason&&reason.startsWith('Firebase save failed')
         ?`Node was kept because Firebase rejected the delete. ${reason}`
@@ -161,18 +164,61 @@
     }
   },true);
   function allowedEdgeTypes(){return selected==='car'?new Set(['main']):selected==='motorcycle'?new Set(['main','moto']):new Set(['main','moto','foot']);}
-  function findShortestPath({useWeights=true,respectOneWay=true}={}){
+  function findShortestPath({useWeights=true,respectOneWay=true,ignorePhotoAccess=false}={}){
     const start=graph.nodes.find((node)=>node.id===routeStartId);const end=graph.nodes.find((node)=>node.id===routeEndId);
     if(!start||!end)return {error:'Hover over a node and set both a start and an end point.'};
     if(start.id===end.id)return {nodes:[start],edges:[],distance:0};
     const nodeById=new Map(graph.nodes.map((node)=>[node.id,node]));const allowed=allowedEdgeTypes();const adjacency=new Map();let photoAccessExcluded=false;
-    for(const edge of graph.edges){if(!allowed.has(edge.type||'main'))continue;const from=nodeById.get(edge.from),to=nodeById.get(edge.to);if(!from||!to)continue;if(!photoAccessAllows(edge)||!photoAccessAllows(from)||!photoAccessAllows(to)){photoAccessExcluded=true;continue;}const length=edgeLength(edge,from,to);const weightedLength=length*(1+weightScore(edge)+(weightScore(from)+weightScore(to))/2);for(const [nodeId,neighborId] of (edge.oneway&&respectOneWay?[[from.id,to.id]]:[[from.id,to.id],[to.id,from.id]])){if(!adjacency.has(nodeId))adjacency.set(nodeId,[]);adjacency.get(nodeId).push({edge,neighborId,cost:useWeights?weightedLength:length});}}
+    for(const edge of graph.edges){if(!allowed.has(edge.type||'main'))continue;const from=nodeById.get(edge.from),to=nodeById.get(edge.to);if(!from||!to)continue;const edgeBlocked=!photoAccessAllows(edge),fromBlocked=!photoAccessAllows(from),toBlocked=!photoAccessAllows(to);if(edgeBlocked||fromBlocked||toBlocked)photoAccessExcluded=true;if(!ignorePhotoAccess&&(edgeBlocked||fromBlocked||toBlocked))continue;const length=edgeLength(edge,from,to);const weightedLength=length*(1+weightScore(edge)+(weightScore(from)+weightScore(to))/2);for(const [nodeId,neighborId] of (edge.oneway&&respectOneWay?[[from.id,to.id]]:[[from.id,to.id],[to.id,from.id]])){if(!adjacency.has(nodeId))adjacency.set(nodeId,[]);adjacency.get(nodeId).push({edge,neighborId,cost:useWeights?weightedLength:length});}}
     const open=new Set([start.id]);const cameFrom=new Map();const gScore=new Map([[start.id,0]]);const fScore=new Map([[start.id,distanceMeters(start,end)]]);
     while(open.size){let current=null;for(const id of open)if(current===null||fScore.get(id)<fScore.get(current))current=id;if(current===end.id){const pathNodes=[end.id];const pathEdges=[];let cursor=end.id;while(cameFrom.has(cursor)){const previous=cameFrom.get(cursor);pathEdges.unshift(previous.edge);cursor=previous.nodeId;pathNodes.unshift(cursor);}const nodes=pathNodes.map((id)=>nodeById.get(id));let distance=0;let weightedCost=0;for(let i=0;i<pathEdges.length;i++){const edgeDistance=edgeLength(pathEdges[i],nodes[i],nodes[i+1]);distance+=edgeDistance;weightedCost+=edgeDistance*(1+weightScore(pathEdges[i])+(weightScore(nodes[i])+weightScore(nodes[i+1]))/2);}return {nodes,edges:pathEdges,distance,cost:weightedCost};}open.delete(current);for(const neighbor of adjacency.get(current)||[]){const tentative=gScore.get(current)+neighbor.cost;if(tentative<(gScore.get(neighbor.neighborId)??Infinity)){cameFrom.set(neighbor.neighborId,{nodeId:current,edge:neighbor.edge});gScore.set(neighbor.neighborId,tentative);fScore.set(neighbor.neighborId,tentative+distanceMeters(nodeById.get(neighbor.neighborId),end));open.add(neighbor.neighborId);}}}
-    return {error:photoAccessExcluded?`No connected ${selected} route was found. Photo assessments exclude one or more roads that this travel mode cannot use.`:'No connected path was found for this travel mode.'};
+    return {error:photoAccessExcluded&&!ignorePhotoAccess?`No connected ${selected} route was found because photo access restrictions block the available paths.`:'No connected path was found for this travel mode.'};
   }
   function drawRoute(path,style={}){const coordinates=[];for(let i=0;i<path.edges.length;i++){const segment=edgePoints(path.edges[i],path.nodes[i],path.nodes[i+1]);coordinates.push(...(coordinates.length?segment.slice(1):segment));}if(coordinates.length<2)return null;return L.polyline(coordinates,{color:style.color||'#2865d7',weight:style.weight||9,opacity:style.opacity??.92,dashArray:style.dashArray||null,lineCap:'round',lineJoin:'round'}).addTo(routeLayer);}
+  function findAccessBottleneck(){
+    const start=graph.nodes.find((node)=>node.id===routeStartId);const end=graph.nodes.find((node)=>node.id===routeEndId);if(!start||!end)return [];
+    const nodeById=new Map(graph.nodes.map((node)=>[node.id,node]));const allowed=allowedEdgeTypes();const network=new Map();const original=[];const infinity=1e6;const ensure=(id)=>{if(!network.has(id))network.set(id,[]);return network.get(id);};
+    const addArc=(from,to,capacity,blocker=null)=>{const forward={to,rev:ensure(to).length,capacity,initial:capacity,blocker};const reverse={to:from,rev:ensure(from).length,capacity:0,initial:0,blocker:null};ensure(from).push(forward);ensure(to).push(reverse);original.push({from,to,arc:forward});};
+    const inId=(id)=>`node:${id}:in`;const outId=(id)=>`node:${id}:out`;
+    for(const node of graph.nodes){const blocked=!photoAccessAllows(node);addArc(inId(node.id),outId(node.id),blocked?1:infinity,blocked?{type:'node',item:node}:null);}
+    addArc('source',inId(start.id),infinity);addArc(outId(end.id),'sink',infinity);
+    for(const edge of graph.edges){if(!allowed.has(edge.type||'main'))continue;const from=nodeById.get(edge.from);const to=nodeById.get(edge.to);if(!from||!to)continue;const blocked=!photoAccessAllows(edge);const blocker=blocked?{type:'edge',item:edge}:null;addArc(outId(from.id),inId(to.id),blocked?1:infinity,blocker);if(!edge.oneway)addArc(outId(to.id),inId(from.id),blocked?1:infinity,blocker);}
+    let flow=0;
+    while(true){const parent=new Map([['source',null]]);const queue=['source'];for(let head=0;head<queue.length&&!parent.has('sink');head++){const from=queue[head];for(let index=0;index<ensure(from).length;index++){const arc=ensure(from)[index];if(arc.capacity<=0||parent.has(arc.to))continue;parent.set(arc.to,{from,index});queue.push(arc.to);if(arc.to==='sink')break;}}if(!parent.has('sink'))break;let amount=infinity;for(let cursor='sink';cursor!=='source';){const step=parent.get(cursor);amount=Math.min(amount,ensure(step.from)[step.index].capacity);cursor=step.from;}for(let cursor='sink';cursor!=='source';){const step=parent.get(cursor);const arc=ensure(step.from)[step.index];arc.capacity-=amount;ensure(cursor)[arc.rev].capacity+=amount;cursor=step.from;}flow+=amount;if(flow>=infinity)break;}
+    if(flow>=infinity)return [];
+    const reachable=new Set(['source']);const queue=['source'];for(let head=0;head<queue.length;head++){const from=queue[head];for(const arc of ensure(from)){if(arc.capacity>0&&!reachable.has(arc.to)){reachable.add(arc.to);queue.push(arc.to);}}}
+    const blockers=[];const seen=new Set();for(const entry of original){if(entry.arc.initial!==1||!entry.arc.blocker||!reachable.has(entry.from)||reachable.has(entry.to))continue;const key=`${entry.arc.blocker.type}:${entry.arc.blocker.item.id}`;if(!seen.has(key)){seen.add(key);blockers.push(entry.arc.blocker);}}
+    return blockers;
+  }
+  function highlightAccessBlockers(blockers){
+    for(const blocker of blockers){if(blocker.type==='edge'){const edge=blocker.item;const from=graph.nodes.find((node)=>node.id===edge.from);const to=graph.nodes.find((node)=>node.id===edge.to);if(from&&to)L.polyline(edgePoints(edge,from,to),{color:'#c62828',weight:12,opacity:.9,dashArray:'7 5',lineCap:'round',lineJoin:'round'}).addTo(routeLayer);}else{const node=blocker.item;L.circleMarker([node.lat,node.lng],{radius:13,color:'#b42318',weight:4,fillColor:'#ffd8d5',fillOpacity:.95}).addTo(routeLayer);}}
+    if(blockers.length){const layers=routeLayer.getLayers();if(layers.length)map.fitBounds(L.featureGroup(layers).getBounds(),{padding:[42,42],maxZoom:18});}
+  }
+  const accessBlockerLabel=(blocker)=>{if(blocker.type==='node')return `Node: ${blocker.item.name||'Map node'} (${blocker.item.lat.toFixed(5)}, ${blocker.item.lng.toFixed(5)})`;const edge=blocker.item;const from=graph.nodes.find((node)=>node.id===edge.from);const to=graph.nodes.find((node)=>node.id===edge.to);return `Edge: ${edge.name||'Unnamed edge'} (${from?.name||edge.from} → ${to?.name||edge.to})`;};
   const sameRoute=(a,b)=>a.nodes.length===b.nodes.length&&a.nodes.every((node,index)=>node.id===b.nodes[index].id)&&a.edges.every((edge,index)=>edge.id===b.edges[index].id);
+  function updateRouteDisplay({fitBounds=true}={}){
+    const result=document.getElementById('route-result');const path=findShortestPath();routeLayer.clearLayers();
+    if(path.error){
+      if(path.error.includes('photo access')){
+        const unrestricted=findShortestPath({useWeights:false,ignorePhotoAccess:true});
+        if(!unrestricted.error){const blockers=findAccessBottleneck();if(blockers.length){highlightAccessBlockers(blockers);result.textContent=`No connected ${selected} route. ${blockers.length===1?'This map item forms':'These map items form'} the photo access bottleneck: ${blockers.map(accessBlockerLabel).join('; ')}. Highlighted in red.`;}else result.textContent=`No connected ${selected} route. Photo access blocks the available paths, but no single bottleneck could be isolated.`;}
+        else result.textContent=`No connected ${selected} route. The map has no path for this travel mode even when photo access restrictions are ignored.`;
+      }else result.textContent=path.error;
+      result.hidden=false;return false;
+    }
+    const distancePath=findShortestPath({useWeights:false});const openDirectionPath=findShortestPath({useWeights:false,respectOneWay:false});
+    const routeLines=[];const routesAreSame=!distancePath.error&&sameRoute(path,distancePath);
+    if(!distancePath.error&&!routesAreSame)routeLines.push(drawRoute(distancePath,{color:'#0b8f6a',weight:7,opacity:.96,dashArray:'10 7'}));
+    if(path.edges.length)routeLines.push(drawRoute(path));
+    const visibleLines=routeLines.filter(Boolean);if(fitBounds&&visibleLines.length)map.fitBounds(L.featureGroup(visibleLines).getBounds(),{padding:[42,42],maxZoom:17});
+    if(!path.edges.length)result.textContent='Start and end are the same node. Route distance and adjusted cost: 0 m.';
+    else if(routesAreSame)result.textContent=`The weight-aware route is also the shortest-distance route for ${selected}: ${formatDistance(path.distance)}. Its adjusted cost is ${formatDistance(path.cost)}.`;
+    else result.textContent=`Primary blue line: lowest weight-adjusted cost (${formatDistance(path.distance)} physical distance; adjusted cost ${formatDistance(path.cost)}). Green dashed line: shortest physical distance allowed for ${selected} (${distancePath.error?'unavailable':formatDistance(distancePath.distance)}).`;
+    if(!openDirectionPath.error&&!distancePath.error&&openDirectionPath.distance+1>distancePath.distance)result.textContent+=` One-way restrictions exclude a shorter ${formatDistance(openDirectionPath.distance)} path.`;
+    else if(distancePath.error&&!openDirectionPath.error)result.textContent+=' A path exists only if one-way restrictions are ignored.';
+    result.textContent+=' Both routes respect road type, one-way direction, and photo access; the blue route also accounts for impediment weights.';result.hidden=false;return true;
+  }
+  function refreshRouteIfReady(){if(routeStartId&&routeEndId)return updateRouteDisplay({fitBounds:true});return false;}
   const persistGraph=()=>{
     try{localStorage.setItem(storageKey,JSON.stringify(graph));}
     catch{editorStatus.textContent='Could not save this map in this browser.';return Promise.resolve(false);}
@@ -224,7 +270,7 @@
     if(item)startMapWeightPhotoFlow(input,item,targetType);
     else input.value='';
   },true);
-  window.rescueRouteApplyMapWeight=async({targetType,targetId,weight,photoAccess})=>{const item=(targetType==='node'?graph.nodes:graph.edges).find((entry)=>entry.id===targetId);if(!item)throw new Error('This map item no longer exists. Return to the map and select it again.');if(!cloudClient?.auth.currentUser)throw new Error('Sign in before saving a map weight.');if(!cloudSyncReady)throw new Error('The shared map is still loading. Wait a moment and retry.');const oldWeight=item.weight,oldPhotoAccess=item.photoAccess;item.weight=normalizeWeight(weight);item.photoAccess=photoAccess;routeLayer.clearLayers();document.getElementById('route-result').hidden=true;renderGraph();const saved=await persistGraph();if(!saved){const firebaseReason=editorStatus.textContent||'Firebase did not confirm the save.';item.weight=oldWeight;item.photoAccess=oldPhotoAccess;try{localStorage.setItem(storageKey,JSON.stringify(graph));}catch{}renderGraph();throw new Error(`The suggested access and weight were not saved. ${firebaseReason}`);}return item.weight;};
+  window.rescueRouteApplyMapWeight=async({targetType,targetId,weight,photoAccess})=>{const item=(targetType==='node'?graph.nodes:graph.edges).find((entry)=>entry.id===targetId);if(!item)throw new Error('This map item no longer exists. Return to the map and select it again.');if(!cloudClient?.auth.currentUser)throw new Error('Sign in before saving a map weight.');if(!cloudSyncReady)throw new Error('The shared map is still loading. Wait a moment and retry.');const oldWeight=item.weight,oldPhotoAccess=item.photoAccess;item.weight=normalizeWeight(weight);item.photoAccess=photoAccess;routeLayer.clearLayers();document.getElementById('route-result').hidden=true;renderGraph();const saved=await persistGraph();if(!saved){const firebaseReason=editorStatus.textContent||'Firebase did not confirm the save.';item.weight=oldWeight;item.photoAccess=oldPhotoAccess;try{localStorage.setItem(storageKey,JSON.stringify(graph));}catch{}renderGraph();throw new Error(`The suggested access and weight were not saved. ${firebaseReason}`);}refreshRouteIfReady();return item.weight;};
   const modeButtons=[['add-street-node','add'],['add-street-edge','edge'],['select-map-area','area']];
   const analyzeAreaButton=document.getElementById('analyze-map-area');
   const cancelAreaButton=document.getElementById('cancel-map-area');
@@ -260,22 +306,21 @@
       const from=graph.nodes.find((node)=>node.id===edge.from);
       const to=graph.nodes.find((node)=>node.id===edge.to);
       if(!from||!to)continue;
-      const line=L.polyline(edgePoints(edge,from,to),{color:colors[edge.type]||colors.main,weight:6,opacity:.95,lineCap:'round',lineJoin:'round'}).addTo(customLayers[edge.type]||customLayers.main);
+      const line=L.polyline(edgePoints(edge,from,to),{color:colors[edge.type]||colors.unmarked,weight:6,opacity:.95,lineCap:'round',lineJoin:'round'}).addTo(customLayers[edge.type]||customLayers.main);
       line.bindPopup(`<div class="street-popup"><strong>${safeText(edge.name||'Street edge')}</strong><br>${safeText(from.name||'Node')} ↔ ${safeText(to.name||'Node')}${photoAccessMarkup(edge)}<div class="weight-editor"><label>Impediment weight <span><output data-edge-weight-value>${weightScore(edge)}</output>/10</span><input type="range" data-edge-weight min="0" max="10" step="1" value="${weightScore(edge)}"></label><small>0 = clear · 10 = heavily impeded</small></div><div class="weight-photo-control"><label>📷 Upload road photo to assess access and weight<input type="file" data-weight-photo data-weight-photo-target-type="edge" data-weight-photo-target-id="${safeText(edge.id)}" accept="image/jpeg,image/png,image/webp" capture="environment" hidden></label><small data-weight-photo-status>Review the AI result on Photo uploads, then apply it to this edge.</small></div><button type="button" data-delete-edge="${safeText(edge.id)}">Delete edge</button></div>`);
-      line.on('popupopen',(event)=>{const popup=event.popup.getElement();const weightInput=popup.querySelector('[data-edge-weight]');weightInput.oninput=()=>{popup.querySelector('[data-edge-weight-value]').value=weightInput.value;popup.querySelector('[data-edge-weight-value]').textContent=weightInput.value;};weightInput.onchange=()=>{edge.weight=normalizeWeight(weightInput.value);routeLayer.clearLayers();document.getElementById('route-result').hidden=true;persistGraph();};const button=popup.querySelector('[data-delete-edge]');if(button)button.onclick=()=>{graph.edges=graph.edges.filter((item)=>item.id!==edge.id);routeLayer.clearLayers();document.getElementById('route-result').hidden=true;renderGraph();persistGraph();map.closePopup();};});
+      line.on('popupopen',(event)=>{const popup=event.popup.getElement();const weightInput=popup.querySelector('[data-edge-weight]');weightInput.oninput=()=>{popup.querySelector('[data-edge-weight-value]').value=weightInput.value;popup.querySelector('[data-edge-weight-value]').textContent=weightInput.value;};weightInput.onchange=()=>{edge.weight=normalizeWeight(weightInput.value);persistGraph().then(refreshRouteIfReady);};const button=popup.querySelector('[data-delete-edge]');if(button)button.onclick=()=>{graph.edges=graph.edges.filter((item)=>item.id!==edge.id);routeLayer.clearLayers();document.getElementById('route-result').hidden=true;renderGraph();persistGraph().then(refreshRouteIfReady);map.closePopup();};});
     }
     for(const node of graph.nodes){
       const routeClass=routeStartId===node.id?' is-route-start':routeEndId===node.id?' is-route-end':'';
-      const markerLabel=node.kind==='intersection'?'×':safeText(node.name?.slice(0,1)||'•');
-      const icon=L.divIcon({className:'',html:`<span class="custom-node-icon${edgeStart===node.id?' is-selected':''}${routeClass}">${markerLabel}</span>`,iconSize:[24,24],iconAnchor:[12,12]});
-      const marker=L.marker([node.lat,node.lng],{icon,draggable:true}).addTo(customMarkers);
+      const icon=L.divIcon({className:'',html:`<span class="custom-node-icon${edgeStart===node.id?' is-selected':''}${routeClass}" aria-hidden="true"></span>`,iconSize:[24,24],iconAnchor:[12,12]});
+      const marker=L.marker([node.lat,node.lng],{icon,draggable:true,title:node.name||'Map node',alt:node.name||'Map node'}).addTo(customMarkers);
       markersByNodeId.set(node.id,marker);
-      marker.on('dragend',()=>{const point=marker.getLatLng();node.lat=point.lat;node.lng=point.lng;routeLayer.clearLayers();document.getElementById('route-result').hidden=true;renderGraph();persistGraph();});
+      marker.on('dragend',()=>{const point=marker.getLatLng();node.lat=point.lat;node.lng=point.lng;routeLayer.clearLayers();document.getElementById('route-result').hidden=true;renderGraph();persistGraph().then(refreshRouteIfReady);});
       marker.bindPopup(`<div class="street-popup"><strong>${safeText(node.name||'Map node')}</strong><br>${node.lat.toFixed(5)}, ${node.lng.toFixed(5)}<div class="node-route-actions"><button type="button" data-route-role="start" data-route-node-id="${safeText(node.id)}">Set as start</button><button type="button" data-route-role="end" data-route-node-id="${safeText(node.id)}">Set as end</button></div><button type="button" data-delete-node="${safeText(node.id)}">Delete node</button>${photoAccessMarkup(node)}<div class="weight-editor"><label>Impediment weight <span><output data-node-weight-value>${weightScore(node)}</output>/10</span><input type="range" data-node-weight min="0" max="10" step="1" value="${weightScore(node)}"></label><small>0 = clear · 10 = heavily impeded</small></div>${nodeRoadStatusMarkup(node)}<div class="weight-photo-control"><label>📷 Upload road photo to assess access and weight<input type="file" data-weight-photo data-weight-photo-target-type="node" data-weight-photo-target-id="${safeText(node.id)}" accept="image/jpeg,image/png,image/webp" capture="environment" hidden></label><small data-weight-photo-status>Review the AI result on Photo uploads, then apply it to this node.</small></div></div>`,{autoClose:true,closeOnClick:true,maxWidth:240,autoPan:true,autoPanPadding:[18,18]});
       let hoverTimer=null;const cancelHoverPopup=()=>{clearTimeout(hoverTimer);hoverTimer=null;};
       marker.on('mouseover',()=>{cancelHoverPopup();if(editMode==='edge'||editMode==='area')return;hoverTimer=setTimeout(()=>marker.openPopup(),2000);});
       marker.on('mouseout dragstart click',cancelHoverPopup);
-      marker.on('popupopen',(event)=>{const popup=event.popup.getElement();const weightInput=popup.querySelector('[data-node-weight]');weightInput.oninput=()=>{popup.querySelector('[data-node-weight-value]').value=weightInput.value;popup.querySelector('[data-node-weight-value]').textContent=weightInput.value;const statusBadges=popup.querySelector('[data-node-road-status]');if(statusBadges)statusBadges.outerHTML=nodeRoadStatusMarkup(node,weightInput.value);};weightInput.onchange=()=>{node.weight=normalizeWeight(weightInput.value);routeLayer.clearLayers();document.getElementById('route-result').hidden=true;persistGraph();};});
+      marker.on('popupopen',(event)=>{const popup=event.popup.getElement();const weightInput=popup.querySelector('[data-node-weight]');weightInput.oninput=()=>{popup.querySelector('[data-node-weight-value]').value=weightInput.value;popup.querySelector('[data-node-weight-value]').textContent=weightInput.value;const statusBadges=popup.querySelector('[data-node-road-status]');if(statusBadges)statusBadges.outerHTML=nodeRoadStatusMarkup(node,weightInput.value);};weightInput.onchange=()=>{node.weight=normalizeWeight(weightInput.value);persistGraph().then(refreshRouteIfReady);};});
       marker.on('click',()=>{
         if(editMode==='area'){addAreaPoint(marker.getLatLng());return;}
         if(editMode==='edge'){
@@ -286,7 +331,7 @@
           const alreadyConnected=graph.edges.some((item)=>(item.from===start.id&&item.to===node.id)||(item.from===node.id&&item.to===start.id));
           if(alreadyConnected){edgeStart=null;editMode='';updateModeButtons();editorStatus.textContent='These nodes already have an edge.';renderGraph();return;}
           graph.edges.push({id:crypto.randomUUID(),from:start.id,to:node.id,name:nodeName.value.trim()||`${start.name||'Node'} – ${node.name||'Node'}`,type:nodeType.value,weight:0});
-          edgeStart=null;editMode='';routeLayer.clearLayers();document.getElementById('route-result').hidden=true;updateModeButtons();renderGraph();persistGraph();return;
+          edgeStart=null;editMode='';routeLayer.clearLayers();document.getElementById('route-result').hidden=true;updateModeButtons();renderGraph();persistGraph().then(refreshRouteIfReady);return;
         }
         marker.openPopup();
       });
@@ -319,11 +364,11 @@
       if(!saved){graph=previous;renderGraph();throw new Error('Intersections were found, but Firebase did not save them. Check your Firestore map write rules and retry.');}
       const intersections=result.intersections??result.nodes.filter((node)=>node.kind==='intersection').length;
       editorStatus.textContent=result.roadCoverageIncomplete?result.summary:`Added ${intersections} AI-verified intersection ${intersections===1?'node':'nodes'} and ${result.edges.length} OSM ${result.edges.length===1?'edge':'edges'} to Firebase.`;
-      clearAreaSelection();editMode='';map.doubleClickZoom.enable();updateModeButtons();
+      clearAreaSelection();editMode='';map.doubleClickZoom.enable();updateModeButtons();refreshRouteIfReady();
     }catch(error){areaAnalysisBusy=false;analyzeAreaButton.disabled=areaPoints.length<3;analyzeAreaButton.textContent='Analyze intersections with AI';editorStatus.textContent=error instanceof TypeError&&/fetch/i.test(error.message)?'The map-analysis connection ended before a result arrived. Retry; if it happens again, check the server deployment logs.':error?.message||'Area analysis failed. Try again.';}
   });
   document.getElementById('stop-street-edit').addEventListener('click',()=>{if(editMode==='area')clearAreaSelection();editMode='';edgeStart=null;map.doubleClickZoom.enable();updateModeButtons();editorStatus.textContent='Editor ready. Hover a node to set route endpoints.';renderGraph();});
-  map.on('click',(event)=>{if(editMode==='area'){addAreaPoint(event.latlng);return;}if(editMode!=='add')return;graph.nodes.push({id:crypto.randomUUID(),name:nodeName.value.trim()||`Node ${graph.nodes.length+1}`,lat:event.latlng.lat,lng:event.latlng.lng,weight:0});editMode='';routeLayer.clearLayers();document.getElementById('route-result').hidden=true;updateModeButtons();renderGraph();persistGraph();});
+  map.on('click',(event)=>{if(editMode==='area'){addAreaPoint(event.latlng);return;}if(editMode!=='add')return;graph.nodes.push({id:crypto.randomUUID(),name:nodeName.value.trim()||`Node ${graph.nodes.length+1}`,lat:event.latlng.lat,lng:event.latlng.lng,weight:0});editMode='';routeLayer.clearLayers();document.getElementById('route-result').hidden=true;updateModeButtons();renderGraph();persistGraph().then(refreshRouteIfReady);});
   document.getElementById('clear-street-map').addEventListener('click',()=>{if(!graph.nodes.length&&!graph.edges.length){editorStatus.textContent='There are no custom nodes or edges to clear.';return;}if(!window.confirm('Delete all nodes and edges saved in this browser?'))return;graph={nodes:[],edges:[]};routeStartId=null;routeEndId=null;saveRouteSelection();routeLayer.clearLayers();renderGraph();persistGraph();updateRouteSelectionStatus();});
   for (const [key,road] of Object.entries(samples)) {
     const style={color:colors[key],weight:key==='main'?6:5,opacity:.94,lineCap:'round',lineJoin:'round',dashArray:key==='moto'?'10 8':key==='foot'?'2 9':null};
@@ -353,28 +398,10 @@
     const allowed=selected==='car'?['main']:selected==='motorcycle'?['main','moto']:['main','moto','foot'];
     checkboxes.forEach((input)=>{const on=allowed.includes(input.dataset.layer);input.checked=on;input.dispatchEvent(new Event('change'));});
     document.getElementById('toggle-all').textContent=allowed.length===3?'Hide all':'Show all';
-    routeLayer.clearLayers();document.getElementById('route-result').hidden=true;
+    if(!refreshRouteIfReady()){routeLayer.clearLayers();document.getElementById('route-result').hidden=true;}
   }));
   document.getElementById('show-route').addEventListener('click',()=>{
-    const result=document.getElementById('route-result');
-    const path=findShortestPath();
-    const distancePath=findShortestPath({useWeights:false});
-    const openDirectionPath=findShortestPath({useWeights:false,respectOneWay:false});
-    routeLayer.clearLayers();
-    if(path.error){result.textContent=path.error;result.hidden=false;return;}
-    const routeLines=[];
-    const routesAreSame=!distancePath.error&&sameRoute(path,distancePath);
-    if(!distancePath.error&&!routesAreSame)routeLines.push(drawRoute(distancePath,{color:'#7b8995',weight:7,opacity:.72,dashArray:'8 7'}));
-    routeLines.push(drawRoute(path));
-    const visibleLines=routeLines.filter(Boolean);
-    if(visibleLines.length)map.fitBounds(L.featureGroup(visibleLines).getBounds(),{padding:[42,42],maxZoom:17});
-    if(!path.edges.length)result.textContent='Start and end are the same node. Route distance and adjusted cost: 0 m.';
-    else if(routesAreSame)result.textContent=`A* kept the same route as distance-only shortest: ${formatDistance(path.distance)}; weight-adjusted cost ${formatDistance(path.cost)}. No lower-cost route is connected for ${selected} under the current one-way rules.`;
-    else result.textContent=`Weight-aware A*: ${formatDistance(path.distance)} physical, cost ${formatDistance(path.cost)}. Gray dashed line: distance-only shortest is ${distancePath.error?'unavailable':`${formatDistance(distancePath.distance)} physical (cost ${formatDistance(distancePath.cost)})`}.`;
-    if(!openDirectionPath.error&&!distancePath.error&&openDirectionPath.distance+1>distancePath.distance)result.textContent+=` One-way restrictions exclude a shorter ${formatDistance(openDirectionPath.distance)} path.`;
-    else if(distancePath.error&&!openDirectionPath.error)result.textContent+=' A path exists only if one-way restrictions are ignored.';
-    result.textContent+=' Photo access checks are applied for this travel mode; roads marked inaccessible are excluded.';
-    result.hidden=false;
+    updateRouteDisplay({fitBounds:true});
   });
   const search=async()=>{
     const input=document.getElementById('city-search');const status=document.getElementById('search-status');
@@ -396,7 +423,7 @@
     status.textContent='Finding your location…';
     navigator.geolocation.getCurrentPosition((position)=>{map.setView([position.coords.latitude,position.coords.longitude],15);document.getElementById('map-location-label').textContent='YOUR LOCATION';status.textContent='Map centred on your location. The sample overlays aren’t verified nearby roads.';},()=>{status.textContent='Location access was unavailable. Search for a city instead.';},{timeout:10000,maximumAge:60000});
   });
-  import('./firebase-client.js').then((client)=>{cloudClient=client;client.onAuthStateChanged(client.auth,(user)=>{stopCloudSync?.();stopCloudSync=null;cloudSyncReady=false;editorStatus.textContent=user?'Loading the shared Manila street graph from Firebase…':'Loading the shared Manila street graph…';stopCloudSync=client.onSnapshot(client.doc(client.db,'cityMaps','manila'),async(snapshot)=>{const version=++mapSnapshotVersion;const remote=snapshot.exists()?snapshot.data():null;try{if(remote?.format==='chunked-v1'){cloudChunkCounts={nodes:Number(remote.nodeChunks)||0,edges:Number(remote.edgeChunks)||0};cloudChunkGeneration=remote.generation||null;const chunksSnapshot=await client.getDocs(client.collection(client.doc(client.db,'cityMaps','manila'),'chunks'));if(version!==mapSnapshotVersion)return;const pieces={nodes:[],edges:[]};chunksSnapshot.forEach((chunkDoc)=>{const chunk=chunkDoc.data();if(remote.generation&&chunk.generation!==remote.generation)return;if((chunk.kind==='nodes'||chunk.kind==='edges')&&Array.isArray(chunk.items))pieces[chunk.kind].push([Number.isInteger(chunk.index)?chunk.index:Number(chunkDoc.id.split('_').at(-1)),chunk.items]);});for(const kind of ['nodes','edges']){pieces[kind].sort((a,b)=>a[0]-b[0]);const expected=cloudChunkCounts[kind];if(pieces[kind].length!==expected)throw new Error(`Firebase map data is incomplete (${kind} chunks: ${pieces[kind].length}/${expected}).`);}graph=normalizeGraph({nodes:pieces.nodes.flatMap((chunk)=>chunk[1]),edges:pieces.edges.flatMap((chunk)=>chunk[1])});}else{const remoteEdges=Array.isArray(remote?.edges)?remote.edges:remote?.connectors;if(remote&&Array.isArray(remote.nodes)&&Array.isArray(remoteEdges)){graph=normalizeGraph({nodes:remote.nodes,edges:remoteEdges});cloudChunkCounts={nodes:0,edges:0};cloudChunkGeneration=null;}else{cloudSyncReady=true;cloudChunkGeneration=null;cloudChunkCounts={nodes:0,edges:0};if(graph.nodes.length||graph.edges.length){if(user)persistGraph();else editorStatus.textContent='No shared map exists yet. Sign in before saving the first shared nodes and edges.';}else editorStatus.textContent=user?'Connected to Firebase. Add nodes and edges to build the Manila street map.':'No shared map exists yet. Sign in to create the Manila street map.';return;}}if(version!==mapSnapshotVersion)return;routeLayer.clearLayers();try{localStorage.setItem(storageKey,JSON.stringify(graph));}catch{}renderGraph();updateRouteSelectionStatus();cloudSyncReady=true;editorStatus.textContent=user?`Synced to Firebase · ${graphSummary()}.`:`Loaded shared map from Firebase · ${graphSummary()}. Sign in to save edits for everyone.`;}catch(error){if(version!==mapSnapshotVersion)return;cloudSyncReady=false;console.error('Street map data could not be loaded',error);editorStatus.textContent=`Firebase map load failed (${error?.code||'data'}: ${error?.message||'could not read map chunks'}).`;}},(error)=>{cloudSyncReady=false;console.error('Street map sync could not start',error);editorStatus.textContent=`Firebase sync failed (${error?.code||'unknown'}: ${error?.message||'check Firestore access'}).`;});},(error)=>{console.error('Firebase authentication could not be checked for map sync',error);editorStatus.textContent='Could not check sign-in. Street changes are saved in this browser.';});}).catch((error)=>{console.error('Firebase map sync could not load',error);editorStatus.textContent=`Firebase map sync could not load (${error?.code||'unknown'}: ${error?.message||'check Firebase configuration'}).`;});
+  import('./firebase-client.js').then((client)=>{cloudClient=client;client.onAuthStateChanged(client.auth,(user)=>{stopCloudSync?.();stopCloudSync=null;cloudSyncReady=false;editorStatus.textContent=user?'Loading the shared Manila street graph from Firebase…':'Loading the shared Manila street graph…';stopCloudSync=client.onSnapshot(client.doc(client.db,'cityMaps','manila'),async(snapshot)=>{const version=++mapSnapshotVersion;const remote=snapshot.exists()?snapshot.data():null;try{if(remote?.format==='chunked-v1'){cloudChunkCounts={nodes:Number(remote.nodeChunks)||0,edges:Number(remote.edgeChunks)||0};cloudChunkGeneration=remote.generation||null;const chunksSnapshot=await client.getDocs(client.collection(client.doc(client.db,'cityMaps','manila'),'chunks'));if(version!==mapSnapshotVersion)return;const pieces={nodes:[],edges:[]};chunksSnapshot.forEach((chunkDoc)=>{const chunk=chunkDoc.data();if(remote.generation&&chunk.generation!==remote.generation)return;if((chunk.kind==='nodes'||chunk.kind==='edges')&&Array.isArray(chunk.items))pieces[chunk.kind].push([Number.isInteger(chunk.index)?chunk.index:Number(chunkDoc.id.split('_').at(-1)),chunk.items]);});for(const kind of ['nodes','edges']){pieces[kind].sort((a,b)=>a[0]-b[0]);const expected=cloudChunkCounts[kind];if(pieces[kind].length!==expected)throw new Error(`Firebase map data is incomplete (${kind} chunks: ${pieces[kind].length}/${expected}).`);}graph=normalizeGraph({nodes:pieces.nodes.flatMap((chunk)=>chunk[1]),edges:pieces.edges.flatMap((chunk)=>chunk[1])});}else{const remoteEdges=Array.isArray(remote?.edges)?remote.edges:remote?.connectors;if(remote&&Array.isArray(remote.nodes)&&Array.isArray(remoteEdges)){graph=normalizeGraph({nodes:remote.nodes,edges:remoteEdges});cloudChunkCounts={nodes:0,edges:0};cloudChunkGeneration=null;}else{cloudSyncReady=true;cloudChunkGeneration=null;cloudChunkCounts={nodes:0,edges:0};if(graph.nodes.length||graph.edges.length){if(user)persistGraph();else editorStatus.textContent='No shared map exists yet. Sign in before saving the first shared nodes and edges.';}else editorStatus.textContent=user?'Connected to Firebase. Add nodes and edges to build the Manila street map.':'No shared map exists yet. Sign in to create the Manila street map.';return;}}if(version!==mapSnapshotVersion)return;routeLayer.clearLayers();try{localStorage.setItem(storageKey,JSON.stringify(graph));}catch{}renderGraph();updateRouteSelectionStatus();cloudSyncReady=true;editorStatus.textContent=user?`Synced to Firebase · ${graphSummary()}.`:`Loaded shared map from Firebase · ${graphSummary()}. Sign in to save edits for everyone.`;refreshRouteIfReady();}catch(error){if(version!==mapSnapshotVersion)return;cloudSyncReady=false;console.error('Street map data could not be loaded',error);editorStatus.textContent=`Firebase map load failed (${error?.code||'data'}: ${error?.message||'could not read map chunks'}).`;}},(error)=>{cloudSyncReady=false;console.error('Street map sync could not start',error);editorStatus.textContent=`Firebase sync failed (${error?.code||'unknown'}: ${error?.message||'check Firestore access'}).`;});},(error)=>{console.error('Firebase authentication could not be checked for map sync',error);editorStatus.textContent='Could not check sign-in. Street changes are saved in this browser.';});}).catch((error)=>{console.error('Firebase map sync could not load',error);editorStatus.textContent=`Firebase map sync could not load (${error?.code||'unknown'}: ${error?.message||'check Firebase configuration'}).`;});
   function resizeMap(){if(!home.hidden)requestAnimationFrame(()=>map.invalidateSize());}
   const uploads=document.getElementById('uploads-page');
   function showPage(page,updateHash=false){

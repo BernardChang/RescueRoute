@@ -54,6 +54,8 @@ async function analyzePhoto(blob, activeUser) {
       !Array.isArray(assessment.obstructing_objects) ||
       (assessment.can_motorcycles_pass !== undefined && typeof assessment.can_motorcycles_pass !== 'boolean') ||
       (assessment.can_pedestrians_pass !== undefined && typeof assessment.can_pedestrians_pass !== 'boolean') ||
+      (assessment.estimated_clear_width_meters !== null && assessment.estimated_clear_width_meters !== undefined &&
+        (typeof assessment.estimated_clear_width_meters !== 'number' || !Number.isFinite(assessment.estimated_clear_width_meters) || assessment.estimated_clear_width_meters < 0 || assessment.estimated_clear_width_meters > 30)) ||
       (assessment.stairs_visible !== undefined && typeof assessment.stairs_visible !== 'boolean') ||
       (assessment.street_stalls_visible !== undefined && typeof assessment.street_stalls_visible !== 'boolean') ||
       (assessment.parked_vehicles_visible !== undefined && typeof assessment.parked_vehicles_visible !== 'boolean') ||
@@ -82,6 +84,9 @@ function renderAssessment(container, assessment) {
     ['Can cars enter?', assessment.can_vehicles_pass],
     ...(typeof assessment.can_motorcycles_pass === 'boolean' ? [['Can motorcycles pass?', assessment.can_motorcycles_pass]] : []),
     ...(typeof assessment.can_pedestrians_pass === 'boolean' ? [['Can pedestrians pass?', assessment.can_pedestrians_pass]] : []),
+    ['Estimated clear width', Number.isFinite(assessment.estimated_clear_width_meters)
+      ? `${assessment.estimated_clear_width_meters.toFixed(1)} m (${assessment.width_estimate_confidence || 'unrated'} confidence)`
+      : 'Unable to estimate from this photo'],
     ['Is a path obstruction visible?', assessment.obstruction_exists],
     ...(typeof assessment.stairs_visible === 'boolean' ? [['Stairs visible?', assessment.stairs_visible]] : []),
     ...(typeof assessment.street_stalls_visible === 'boolean' ? [['Street stalls visible?', assessment.street_stalls_visible]] : []),
@@ -340,6 +345,8 @@ if (form) {
       const assessment = await analyzePhoto(request.file, user);
       if (!Number.isInteger(assessment.recommended_weight) || typeof assessment.road_visible !== 'boolean' || !assessment.weight_reason ||
           typeof assessment.access_level !== 'string' || typeof assessment.can_motorcycles_pass !== 'boolean' ||
+          !(assessment.estimated_clear_width_meters === null || (typeof assessment.estimated_clear_width_meters === 'number' && Number.isFinite(assessment.estimated_clear_width_meters))) ||
+          typeof assessment.width_estimate_confidence !== 'string' || typeof assessment.route_continues_around_curve !== 'boolean' ||
           typeof assessment.can_pedestrians_pass !== 'boolean' || typeof assessment.stairs_visible !== 'boolean' ||
           typeof assessment.street_stalls_visible !== 'boolean' || typeof assessment.parked_vehicles_visible !== 'boolean' ||
           typeof assessment.low_hanging_wires_visible !== 'boolean') {
@@ -381,6 +388,9 @@ if (form) {
               canVehiclesPass: assessment.can_vehicles_pass,
               canMotorcyclesPass: assessment.can_motorcycles_pass,
               canPedestriansPass: assessment.can_pedestrians_pass,
+              estimatedClearWidthMeters: assessment.estimated_clear_width_meters,
+              widthEstimateConfidence: assessment.width_estimate_confidence,
+              routeContinuesAroundCurve: assessment.route_continues_around_curve,
               hazards: {
                 stairs: assessment.stairs_visible,
                 stalls: assessment.street_stalls_visible,

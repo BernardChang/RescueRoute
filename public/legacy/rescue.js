@@ -19,6 +19,9 @@
     updateWhenIdle: true,
     keepBuffer: 1
   }).addTo(map);
+  const navigationPane=map.createPane('navigation-road');
+  navigationPane.style.zIndex='650';
+  navigationPane.style.pointerEvents='none';
   L.control.zoom({ position: 'bottomright' }).addTo(map);
   L.control.scale({ imperial: false, position: 'bottomleft' }).addTo(map);
   const colors = {main:'#2563eb',moto:'#dc2626',foot:'#16a34a',unmarked:'#f59e0b',blocked:'#64748b'};
@@ -179,7 +182,7 @@
     while(open.size){let current=null;for(const id of open)if(current===null||fScore.get(id)<fScore.get(current))current=id;if(current===end.id){const pathNodes=[end.id];const pathEdges=[];let cursor=end.id;while(cameFrom.has(cursor)){const previous=cameFrom.get(cursor);pathEdges.unshift(previous.edge);cursor=previous.nodeId;pathNodes.unshift(cursor);}const nodes=pathNodes.map((id)=>nodeById.get(id));let distance=0;let weightedCost=0;for(let i=0;i<pathEdges.length;i++){const edgeDistance=edgeLength(pathEdges[i],nodes[i],nodes[i+1]);distance+=edgeDistance;weightedCost+=edgeDistance*(1+weightScore(pathEdges[i])+(weightScore(nodes[i])+weightScore(nodes[i+1]))/2);}return {nodes,edges:pathEdges,distance,cost:weightedCost};}open.delete(current);for(const neighbor of adjacency.get(current)||[]){const tentative=gScore.get(current)+neighbor.cost;if(tentative<(gScore.get(neighbor.neighborId)??Infinity)){cameFrom.set(neighbor.neighborId,{nodeId:current,edge:neighbor.edge});gScore.set(neighbor.neighborId,tentative);fScore.set(neighbor.neighborId,tentative+distanceMeters(nodeById.get(neighbor.neighborId),end));open.add(neighbor.neighborId);}}}
     return {error:photoAccessExcluded&&!ignorePhotoAccess?`No connected ${selected} route was found because photo access restrictions block the available paths.`:'No connected path was found for this travel mode.'};
   }
-  function drawRoute(path,style={}){const coordinates=[];for(let i=0;i<path.edges.length;i++){const segment=edgePoints(path.edges[i],path.nodes[i],path.nodes[i+1]);coordinates.push(...(coordinates.length?segment.slice(1):segment));}if(coordinates.length<2)return null;return L.polyline(coordinates,{color:style.color||'#2865d7',weight:style.weight||9,opacity:style.opacity??.92,dashArray:style.dashArray||null,lineCap:'round',lineJoin:'round'}).addTo(routeLayer);}
+  function drawRoute(path){const coordinates=[];for(let i=0;i<path.edges.length;i++){const segment=edgePoints(path.edges[i],path.nodes[i],path.nodes[i+1]);coordinates.push(...(coordinates.length?segment.slice(1):segment));}if(coordinates.length<2)return null;return L.polyline(coordinates,{pane:'navigation-road',className:'navigation-road-line',color:'#2865d7',weight:9,opacity:1,lineCap:'round',lineJoin:'round',interactive:false,bubblingMouseEvents:false}).addTo(routeLayer);}
   function findAccessBottleneck(){
     const start=graph.nodes.find((node)=>node.id===routeStartId);const end=graph.nodes.find((node)=>node.id===routeEndId);if(!start||!end)return [];
     const nodeById=new Map(graph.nodes.map((node)=>[node.id,node]));const allowed=allowedEdgeTypes();const network=new Map();const original=[];const infinity=1e6;const ensure=(id)=>{if(!network.has(id))network.set(id,[]);return network.get(id);};
@@ -212,16 +215,15 @@
       result.hidden=false;return false;
     }
     const distancePath=findShortestPath({useWeights:false});const openDirectionPath=findShortestPath({useWeights:false,respectOneWay:false});
-    const routeLines=[];const routesAreSame=!distancePath.error&&sameRoute(path,distancePath);
-    if(!distancePath.error&&!routesAreSame)routeLines.push(drawRoute(distancePath,{color:'#0b8f6a',weight:7,opacity:.96,dashArray:'10 7'}));
-    if(path.edges.length)routeLines.push(drawRoute(path));
-    const visibleLines=routeLines.filter(Boolean);if(fitBounds&&visibleLines.length)map.fitBounds(L.featureGroup(visibleLines).getBounds(),{padding:[42,42],maxZoom:17});
+    const routesAreSame=!distancePath.error&&sameRoute(path,distancePath);
+    const navigationLine=path.edges.length?drawRoute(path):null;
+    if(fitBounds&&navigationLine)map.fitBounds(navigationLine.getBounds(),{padding:[42,42],maxZoom:17});
     if(!path.edges.length)result.textContent='Start and end are the same node. Route distance and adjusted cost: 0 m.';
     else if(routesAreSame)result.textContent=`The weight-aware route is also the shortest-distance route for ${selected}: ${formatDistance(path.distance)}. Its adjusted cost is ${formatDistance(path.cost)}.`;
-    else result.textContent=`Primary blue line: lowest weight-adjusted cost (${formatDistance(path.distance)} physical distance; adjusted cost ${formatDistance(path.cost)}). Green dashed line: shortest physical distance allowed for ${selected} (${distancePath.error?'unavailable':formatDistance(distancePath.distance)}).`;
+    else result.textContent=`Blue line: the navigation route with the lowest weight-adjusted cost (${formatDistance(path.distance)} physical distance; adjusted cost ${formatDistance(path.cost)}). The shortest-distance route for ${selected} is ${distancePath.error?'unavailable':formatDistance(distancePath.distance)}; only the navigation route is drawn.`;
     if(!openDirectionPath.error&&!distancePath.error&&openDirectionPath.distance+1>distancePath.distance)result.textContent+=` One-way restrictions exclude a shorter ${formatDistance(openDirectionPath.distance)} path.`;
     else if(distancePath.error&&!openDirectionPath.error)result.textContent+=' A path exists only if one-way restrictions are ignored.';
-    result.textContent+=' Both routes respect road type, one-way direction, and photo access; the blue route also accounts for impediment weights.';result.hidden=false;return true;
+    result.textContent+=' The navigation route respects road type, one-way direction, photo access, and impediment weights.';result.hidden=false;return true;
   }
   function refreshRouteIfReady(){if(routeStartId&&routeEndId)return updateRouteDisplay({fitBounds:true});return false;}
   const persistGraph=()=>{

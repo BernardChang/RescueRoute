@@ -50,7 +50,7 @@ Always assess the approximate clear usable width of the travel surface at its na
 
 Identify visible stairs, street-vendor stalls, parked vehicles, low-hanging wires, and other impediments. A stair-only alley with no vehicle ramp is pedestrian accessible but not vehicle accessible. Do not assume a wire is dangerous merely because it is visible; mark vehicle access false only when its visible clearance blocks ordinary vehicles. Stalls and parked vehicles are hazards, but mark a travel mode as unable to pass only when the clear remaining width or another visible condition prevents that mode from passing.
 
-Recommend a weight from 0 to 10: 0 means a clearly passable route with no visible impediment; 1–2 slight inconvenience; 3 small loose trash/debris; 4–5 partial obstruction but passable with care; 6 a large movable object (such as a dumpster) preventing a typical vehicle from passing until moved; 7–9 severe blockage with only a narrow/difficult passage; 10 a visible dead end or a route fully blocked by an obstruction that cannot reasonably be passed or moved. A dead end is always 10. Reserve 0 for a route that is visibly open and has no meaningful obstruction. Keep the reason factual and under 180 characters. List only visible hazards; if none, return an empty list.`;
+Recommend a weight from 0 to 10 using these access rules: 0 means clearly passable with no meaningful impediment; 1–2 slight inconvenience; 3 small loose trash/debris; 4–5 partial obstruction but still passable with care; 6–8 substantial vehicle impediment where some vehicle passage remains possible or an obstruction can be carefully navigated. Weight 9 means cars and motorcycles cannot pass, but a person on foot can still get through. Weight 10 means nothing can pass, including pedestrians: a solid wall, confirmed dead end, or completely impassable barrier. A dead end is always 10. Do not use 10 when a pedestrian gap or route around a curve remains. Set can_vehicles_pass=false and can_motorcycles_pass=false for weight 9, and set can_pedestrians_pass=true. For weight 10, set all three access flags false. Keep the reason factual and under 180 characters. List only visible hazards; if none, return an empty list.`;
 
   let response;
   try {
@@ -167,6 +167,16 @@ Recommend a weight from 0 to 10: 0 means a clearly passable route with no visibl
     if (width < 2.5) assessment.can_vehicles_pass = false;
     if (width < 1.2) assessment.can_motorcycles_pass = false;
     if (width < 0.6) assessment.can_pedestrians_pass = false;
+  }
+  // Weight 9 means a pedestrian-only gap; weight 10 is impassable to every mode.
+  if (assessment.recommended_weight === 9) {
+    assessment.can_vehicles_pass = false;
+    assessment.can_motorcycles_pass = false;
+    assessment.can_pedestrians_pass = true;
+  } else if (assessment.recommended_weight === 10) {
+    assessment.can_vehicles_pass = false;
+    assessment.can_motorcycles_pass = false;
+    assessment.can_pedestrians_pass = false;
   }
   assessment.access_level = !assessment.road_visible ? 'uncertain'
     : assessment.can_vehicles_pass ? 'vehicle_accessible'
